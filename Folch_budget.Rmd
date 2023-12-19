@@ -1,0 +1,4045 @@
+---
+title: "Folch Stats using Mixed Model Approach"
+author: "Kaitlin Rempfert"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged 
+    number_sections: yes 
+    css: stylesheet.css 
+    toc: yes 
+    toc_float: true 
+    toc_depth: 3 
+    code_folding: show 
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = TRUE, message=FALSE, warning=FALSE}
+# load required packages
+library(tidyverse)
+library(ggplot2)
+library(vegan)
+library(ggvegan)
+library(knitr)
+library(readxl)
+library(rstatix)
+library(ggpubr)
+library(scales)
+library(magick)
+library(patchwork)
+
+knitr::opts_chunk$set(echo = TRUE, cache = F)
+```
+
+# Import Data files
+```{r}
+#read in irMS data for 13C-labeled samples at 2 month Timepoint 
+Folch_frac_2mo <- readxl::read_excel("data/Folch/Folch_pool_dilution_ready.xlsx", .name_repair = "universal") %>% filter(Amendment == "13C-Gluc")
+
+#read in irMS data for 13C-labeled samples at 1 year Timepoint 
+Folch_frac_Final <- readxl::read_excel("data/Folch/Folch_pool_dilution_ready.xlsx", sheet = 2, .name_repair = "universal") %>% filter(Amendment == "13C-Gluc")
+
+#combine Timepoints
+# extract column names of the dataframes
+cols_2mo <- names(Folch_frac_2mo)
+cols_Final <- names(Folch_frac_Final)
+# find the intersection of both column name vectors
+cols_intersection <- intersect(cols_2mo, cols_Final)
+# subset the initial dataframes
+Folch_frac_2mo_sub <- Folch_frac_2mo[,cols_intersection]
+Folch_frac_Final_sub <- Folch_frac_Final[,cols_intersection]
+#bind together subsetted dataframes
+Folch_frac <- rbind(Folch_frac_2mo_sub, Folch_frac_Final_sub)
+```
+
+# Reformat data 
+```{r}
+#edit column names 
+Folch_frac <- Folch_frac %>% dplyr::rename("wt.perc.C" = "wt...C....", "g.DW.Soil.extracted" = "DW.Soil.extracted..g.", "Ratio.R" = "R..ratio.", "Fraction.F" = "F..fraction.", "atom.perc.13C" = "atom..13C",   "wt.perc.13C" = "wt..13C",  "Natural.abundance.atom.perc.13C" = "Natural.abundance.atom..13C", "Natural.Abundance.wt.perc.13C" = "Natural.Abundance.wt..13C", "ug.13C.total.in.whole.samples" = "ug.13C..total.in.whole.samples", "ug.12C.total.in.whole.samples" = "ug.12C..total.in.whole.samples") %>%
+ #edit fraction names
+  mutate(Fraction = case_when(
+ Fraction == "LeftoverSoilPellet" ~ "LSP",
+ Fraction == "WholeSoil" ~ "WS", 
+ TRUE ~ Fraction)
+  ) %>%
+#calculate excess 13C (wt%)
+  mutate(wt.perc.13C.excess = wt.perc.13C - Natural.Abundance.wt.perc.13C) %>%
+#add site-crop and id columns for plot coloring and pairing replicates with time, respectively
+  mutate(site_crop = paste0(Site, " ", Crop), id = paste0(Site ,"_", Crop, "_", Block)) %>% 
+  #convert categorical variable columns to factors for plotting
+  mutate(Timepoint = as.factor(Timepoint), Site = as.factor(Site), Crop = as.factor(Crop), id = as.factor(id), site_crop = as.factor(site_crop))
+
+#calculate fraction of 13C excess and total C each pool represents 
+ Folch_frac_budget  <- Folch_frac %>% filter(Fraction != "WS") %>%
+  group_by(Catalog.Number, Timepoint) %>%
+  mutate(
+    Pool_Pct_ug_13Cexcess_g_soil = ug.13C.excess.per.g.dry.soil/ sum(ug.13C.excess.per.g.dry.soil),
+    Pool_Pct_ug_C_g_soil = ug.Total.C.per.g.dry.soil / sum(ug.Total.C.per.g.dry.soil)) %>%
+  ungroup() %>% select(c(Catalog.Number, Fraction, Timepoint, Pool_Pct_ug_13Cexcess_g_soil, Pool_Pct_ug_C_g_soil))
+ 
+ #rejoin budget with fraction data
+ Folch_frac <- left_join(Folch_frac, Folch_frac_budget)
+```
+
+
+
+# Budget
+
+## ug C/g dry soil
+### 2 month
+```{r}
+budget_2mo <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "2Month") %>% select(c(Catalog.Number, Fraction, ug.Total.C.per.g.dry.soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_2mo %>% group_by(Fraction) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_2mo %>% t_test(ug.Total.C.per.g.dry.soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_2mo, x = "Fraction", y = "ug.Total.C.per.g.dry.soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+### 1 year
+```{r}
+budget_Final <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "Final") %>% select(c(Catalog.Number, Fraction, ug.Total.C.per.g.dry.soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_Final %>% group_by(Fraction) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_Final %>% t_test(ug.Total.C.per.g.dry.soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_Final, x = "Fraction", y = "ug.Total.C.per.g.dry.soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+
+## ug 13 C/g dry soil
+### 2 month
+```{r}
+budget_2mo <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "2Month") %>% select(c(Catalog.Number, Fraction, ug.13C.per.g.dry.soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_2mo %>% group_by(Fraction) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_2mo %>% t_test(ug.13C.per.g.dry.soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_2mo, x = "Fraction", y = "ug.13C.per.g.dry.soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+### 1 year
+```{r}
+budget_Final <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "Final") %>% select(c(Catalog.Number, Fraction, ug.13C.per.g.dry.soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_Final %>% group_by(Fraction) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_Final %>% t_test(ug.13C.per.g.dry.soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_Final, x = "Fraction", y = "ug.13C.per.g.dry.soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+
+## ug 13C excess/g dry soil
+### 2 month
+```{r}
+budget_2mo <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "2Month") %>% select(c(Catalog.Number, Fraction, ug.13C.excess.per.g.dry.soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_2mo %>% group_by(Fraction) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_2mo %>% t_test(ug.13C.excess.per.g.dry.soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_2mo, x = "Fraction", y = "ug.13C.excess.per.g.dry.soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+### 1 year
+```{r}
+budget_Final <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "Final") %>% select(c(Catalog.Number, Fraction, ug.13C.excess.per.g.dry.soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_Final %>% group_by(Fraction) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_Final %>% t_test(ug.13C.excess.per.g.dry.soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_Final, x = "Fraction", y = "ug.13C.excess.per.g.dry.soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+
+## wt% 13C excess
+### 2 month
+```{r}
+budget_2mo <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Fraction != "WS") %>%filter(Timepoint == "2Month") %>% select(c(Catalog.Number, Fraction, wt.perc.13C.excess)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_2mo %>% group_by(Fraction) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_2mo %>% t_test(wt.perc.13C.excess ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_2mo, x = "Fraction", y = "wt.perc.13C.excess")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+### 1 year
+```{r}
+budget_Final <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "Final") %>% select(c(Catalog.Number, Fraction, wt.perc.13C.excess)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_Final %>% group_by(Fraction) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_Final %>% t_test(wt.perc.13C.excess ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_Final, x = "Fraction", y = "wt.perc.13C.excess")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+
+
+
+# Pool Percent Budget
+
+## 13C
+### 2 month
+```{r}
+budget_2mo <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "2Month") %>% select(c(Catalog.Number, Fraction, Pool_Pct_ug_13Cexcess_g_soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_2mo %>% group_by(Fraction) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_2mo %>% t_test(Pool_Pct_ug_13Cexcess_g_soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_2mo, x = "Fraction", y = "Pool_Pct_ug_13Cexcess_g_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+### 1 year
+```{r}
+budget_Final <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "Final") %>% select(c(Catalog.Number, Fraction, Pool_Pct_ug_13Cexcess_g_soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_Final %>% group_by(Fraction) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_Final %>% t_test(Pool_Pct_ug_13Cexcess_g_soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_Final, x = "Fraction", y = "Pool_Pct_ug_13Cexcess_g_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+
+## Natural abundance
+### 2 month
+```{r}
+budget_2mo_NA <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "2Month") %>% select(c(Catalog.Number, Fraction, Pool_Pct_ug_C_g_soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_2mo_NA %>% group_by(Fraction) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_2mo_NA %>% t_test(Pool_Pct_ug_C_g_soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_2mo_NA, x = "Fraction", y = "Pool_Pct_ug_C_g_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+### 1 year
+```{r}
+budget_Final_NA <- Folch_frac %>% filter(Fraction != "WS") %>% filter(Timepoint == "Final") %>% filter(Fraction != "WS") %>% select(c(Catalog.Number, Fraction, Pool_Pct_ug_C_g_soil)) %>% mutate(Fraction = as.factor(Fraction)) %>% ungroup()
+```
+
+#### Summary
+```{r}
+budget_Final_NA  %>% group_by(Fraction) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+#### T-test
+```{r}
+pairwise.test <- budget_Final_NA %>% t_test(Pool_Pct_ug_C_g_soil ~ Fraction, paired = TRUE)
+pairwise.test
+```
+
+#### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(budget_Final_NA, x = "Fraction", y = "Pool_Pct_ug_C_g_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    )
+```
+
+
+
+# CRUD
+```{r}
+#filter dataframe to just the CRUD fraction 
+CRUD <- Folch_frac %>% filter(Fraction == "CRUD") 
+```
+
+## ug C in CRUD per g of dry soil
+### Summary 
+```{r}
+CRUD %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(CRUD, "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD, aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in CRUD/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; no apparent outliers
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.Total.C.per.g.dry.soil)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+CRUD %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There was a statistically significant, three-way interaction between time, site, and crop: F(1,16) = 4.89, p = .042.
+```{r}
+CRUD %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop)) 
+```
+
+### Visualization of Interactions 
+```{r}
+library(afex)
+mixed_anova <- aov_ez(
+  id = "id",
+  dv = "ug.Total.C.per.g.dry.soil",
+  data = CRUD,
+  between = c("Site", "Crop"),
+  within = "Timepoint"
+)
+afex_plot(mixed_anova, x = "Timepoint", trace = "Site", panel = "Crop") 
+```
+
+### Simple Effect Tests
+There was a statistically significant simple two-way interaction between site and Timepoint for switchgrass (F(1,8) = 22.3, bonferroni adjusted p  = .012), but not for corn (F(1,8) = 5.08, bonferroni adjusted p = .324). There was a statistically significant simple simple main effect of site for switchgrass samples at both Timepoints, with a stronger effect at 1 year compared to 2 months. There was also a statistically significant main effect of time for switchgrass samples, with a stronger effect in Wisconsin compared to Michigan.
+```{r}
+#Because there was a significant three-way interaction, performing three simple two-way interactions and simple simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#crop and Timepoint
+#performing a simple two-way interaction between crop and Timepoint for each site; the two way interaction was not significant for either site
+CRUD %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#site and Timepoint
+#performing a simple two-way interaction between site and Timepoint for each crop; the two way interaction was significant for only switchgrass 
+CRUD %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#For switchgrass, compute simple simple main effect of site for each Timepoint; found site is statistically significant for both the 1 year and 2 year Timepoint, with stronger effect at 1 year
+CRUD %>% 
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#For switchgrass, compute simple simple main effect of Timepoint for each site; found Timepoint is statistically significant for both Michigan and Wisconsin, with stronger effect in Wisconsin
+CRUD %>% 
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#site and crop
+#performing a simple two-way interaction between site and crop for each Timepoint; there was no significant two-way interaction between site and crop for either Timepoint  
+CRUD %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+Attempt at summary: 
+
+Wisconsin soils contained significantly higher concentrations (ug C/g soil) of CRUD than Michigan soils (F(1,16)= 81.079, p = 1.16E-7, r2 = 0.815), while the concentration of CRUD was not significantly different between switchgrass and corn crops (F(1,16)=0.223, p=0.643, r2 = 0.012). Soils incubated one year had significantly higher concentrations of CRUD compared to soils only incubated 2 months (F(1,16)=83.986, p=9.12e-8, r2 = 0.403). There was a statistically significant three-way interaction between time, site, and crop (F(1,16) = 4.89, p = .042). There was a significant simple two-way interaction between site and Timepoint (F(1,8)=22.3, bonferroni adjusted p = 0.012, r2 = 0.36) for switchgrass crops, but not corn (F(1,8)=5.08, p adj= 0.324). The simple simple main effect of site for switchgrass crops was significant at both the 2 month (F(1,8)=23.7, bonferroni adjusted p= 0.002, r2=0.747) and 1 year (F(1,8)=54.1, bonferroni adjusted p=0.00016, r2=0.871) Timepoints, but with a greater effect at 1 year. The simple simple main effect of Timepoint for switchgrass crops was significant for both Michigan (F(1,4)=37, p adj = 0.008) and Wisconsin (F(1,4)=47.5, p adj=0.004), but stronger in Wisconsin.
+
+## ug 13C in CRUD per g of dry soil
+### Summary 
+```{r}
+CRUD %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(CRUD, "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD, aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in CRUD/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; no outliers
+outliers <- CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) 
+CRUD %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+```
+
+
+### Three-Way Mixed Model ANOVA
+There was a significant three interaction of site, crop, and timepoint.
+```{r}
+CRUD %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant three-way interaction, performing three simple two-way interactions and simple simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#Crop and Timepoint
+#performing a simple two-way interaction between crop and timepoint for each site; the two way interaction was not significant for either site
+CRUD %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#Site and Timepoint
+#performing a simple two-way interaction between site and timepoint for each crop; the two way interaction was significant for only switchgrass 
+CRUD %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#For switchgrass, compute simple simple main effect of site for each Timepoint; found site is statistically significant for both the 1 year and 2 year Timepoint, with stronger effect at 1 year
+CRUD %>% 
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, wid = id, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#For switchgrass, compute simple simple main effect of Timepoint for each site; found Timepoint is statistically significant only in Wisconsin
+CRUD %>% 
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Site) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#site and crop
+#performing a simple two-way interaction between site and crop for each Timepoint; there was no significant two-way interaction between site and crop for either timepoint  
+CRUD %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, wid = id, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## ug 13C excess in CRUD per g of dry soil
+### Summary 
+```{r}
+CRUD %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(CRUD, "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD, aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in CRUD/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5216 is an extreme outlier
+outliers <- CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.excess.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point with and without the outlier, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+#without outlier
+CRUD %>% 
+  filter(Catalog.Number != "EC5216") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without the outlier
+#with outlier
+CRUD %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+#without outlier
+CRUD %>%
+  filter(Catalog.Number != "EC5216") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#without outlier summary means
+CRUD %>% filter(Catalog.Number != "EC5216") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(CRUD %>% filter(Catalog.Number != "EC5216"), "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD %>% filter(Catalog.Number != "EC5216"), aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in CRUD/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers 
+```{r}
+#with outlier included
+CRUD %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+CRUD %>% filter(Catalog.Number != "EC5216") %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#with outlier
+#simple main effect of site for each crop; site was significant only for corn
+CRUD %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#with outlier
+#simple main effect of site for each Timepoint; site was significant only for 1 year
+CRUD %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#with outlier
+#simple main effect of crop for each Timepoint; crop was significant only for 1 year
+CRUD %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outlier
+#simple main effect of site for each crop; site was significant only for corn
+CRUD %>%
+  filter(Catalog.Number != "EC5216") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outlier
+#simple main effect of site for each Timepoint; site was significant only for 1 year
+CRUD %>%
+  filter(Catalog.Number != "EC5216") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## wt% 13C excess of CRUD 
+### Summary 
+```{r}
+CRUD %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(CRUD, "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD, aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of CRUD", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5155, EC5143, and EC5098 are outliers
+outliers <- CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(wt.perc.13C.excess)
+outliers
+
+#Check for normal distriubtion; wasn't normally distributed at each time point with and without the outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+#without outliers
+CRUD %>% 
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without the outlier
+#with outlier
+CRUD %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+#without outlier
+CRUD %>%
+   filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#without outlier summary means
+CRUD %>% filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+
+#without outlier
+ggboxplot(CRUD %>% filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098"), "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD %>% filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098"), aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt5 13C excess of CRUD", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers 
+```{r}
+#with outlier included
+CRUD %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+CRUD %>% filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant three-way interaction, performing simple two anovas and simple simple main effects 
+
+#without outliers
+#simple two-way anova of site and crop for each timepoint; two-way interaction is only significant for the two month timepoint
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#for the two month timepoint, simple simple main effect of site for each crop; site is significant for each crop, with bigger effect for corn plots
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  filter(Timepoint == "2Month") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#for the two month timepoint, simple simple main effect of crop for each site; crop is significant only for Michigan samples
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  filter(Timepoint == "2Month") %>%
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+
+#without outliers
+#simple two-way anova of site and timepoint for each crop; two-way interaction is only significant for switchgrass plots
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  group_by(Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#for switchgrass, simple simple main effect of site for each timepoint; site is significant for both timepoints, with a bigger effect at 2 months
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#for switchgrass, simple simple main effect of timepoint for each site; timepoint is significant only for Michigan
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  filter(Crop == "Switchgrass") %>%
+  group_by(Site, Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outliers
+#simple two-way anova of crop and timepoint for each site; two-way interaction is only significant for Michigan
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  group_by(Site) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#for Michigan, simple simple main effect of crop for each timepoint; crop is significant for both timepoints, with a bigger effect at 2 months
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  filter(Site == "Michigan") %>%
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#for Michigan, simple simple main effect of timepoint for each crop; timepoint is significant for both crops, with a stronger effect in switchgrass
+CRUD %>%
+  filter(Catalog.Number != "EC5155" & Catalog.Number!= "EC5143" & Catalog.Number != "EC5098") %>%
+  filter(Site == "Michigan") %>%
+  group_by(Site, Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## Percentage of 13C excess in pool per g of dry soil 
+### Summary 
+```{r}
+CRUD %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(CRUD, "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD, aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5126 and EC5120 are extreme outliers
+outliers <- CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_13Cexcess_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outliers
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+#without outliers
+CRUD %>% 
+  filter(Catalog.Number != "EC5126" & Catalog.Number != "EC5120") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outliers
+CRUD %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+#without outliers
+CRUD %>%
+  filter(Catalog.Number != "EC5126" & Catalog.Number != "EC5120") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers 
+```{r}
+#summary without outliers
+CRUD %>% filter(Catalog.Number != "EC5126" & Catalog.Number != "EC5120") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(CRUD %>% filter(Catalog.Number != "EC5126" & Catalog.Number != "EC5120"), "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD %>% filter(Catalog.Number != "EC5126" & Catalog.Number != "EC5120"), aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers
+```{r}
+#with outliers
+CRUD %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+CRUD %>% filter(Catalog.Number != "EC5126" & Catalog.Number != "EC5120") %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#without outliers, there is a significant three-way interaction effect between site, crop, and timepoint; performing three simple two-way interactions and simple simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#Crop and Timepoint
+#performing a simple two-way interaction between crop and timepoint for each site; the two way interaction was not significant for either site
+CRUD %>%
+  group_by(Site) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#Site and Timepoint
+#performing a simple two-way interaction between site and timepoint for each crop; the two way interaction was not significant for either crop 
+CRUD %>%
+  group_by(Crop) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#site and crop
+#performing a simple two-way interaction between site and crop for each Timepoint; there was a significant two-way interaction between site and crop at 2 months
+CRUD %>%
+  group_by(Timepoint) %>%
+  anova_test(dv =  Pool_Pct_ug_13Cexcess_g_soil, wid = id, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#For 2 month samples, compute simple simple main effect of site for each crop; found site is statistically significant only for switchgrass
+CRUD %>% 
+  filter(Timepoint == "2Month") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#For 2 month samples, compute simple simple main effect of crop for each site; found crop is not statistically significant for either site
+CRUD %>% 
+  filter(Timepoint == "2Month") %>%
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## Percentage of Total C in pool per g of dry soil 
+### Summary 
+```{r}
+CRUD %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(CRUD, "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD, aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5120 is an extreme outliers
+outliers <- CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_C_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed only without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outliers
+CRUD %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+#without outliers
+CRUD %>% 
+  filter(Catalog.Number != "EC5120") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outliers
+CRUD %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+#without outliers
+CRUD %>%
+  filter(Catalog.Number != "EC5120") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers 
+```{r}
+#summary without outliers
+CRUD %>% filter(Catalog.Number != "EC5120") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(CRUD %>% filter(Catalog.Number != "EC5120"), "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = CRUD %>% filter(Catalog.Number != "EC5120"), aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers
+No significant interaction effects for either.
+```{r}
+#with outliers
+CRUD %>% anova_test(dv = Pool_Pct_ug_C_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+CRUD %>% filter(Catalog.Number != "EC5120") %>% anova_test(dv = Pool_Pct_ug_C_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+
+# LSP
+```{r}
+#filter dataframe to just the LSP fraction 
+LSP <- Folch_frac %>% filter(Fraction == "LSP") 
+```
+
+## ug C in LSP per g of dry soil
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in LSP/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5291, EC5120, and EC5193 are outliers
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.Total.C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; Michigan Corn at 2 months was not normally distributed, as assessed by Shapiro-Wilk’s test (p > 0.05)
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+#but IS normally distributed after removal of outliers
+LSP %>% 
+  filter(Catalog.Number != "EC5291" & Catalog.Number != "EC5120" & Catalog.Number != "EC5193") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outliers
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+LSP %>%
+  filter(Catalog.Number != "EC5291" & Catalog.Number != "EC5120" & Catalog.Number != "EC5193") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot Without Outliers
+```{r}
+#summary without outliers
+LSP %>% filter(Catalog.Number != "EC5291" & Catalog.Number != "EC5120" & Catalog.Number != "EC5193") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+
+ggboxplot(LSP %>% filter(Catalog.Number != "EC5291" & Catalog.Number != "EC5120" & Catalog.Number != "EC5193"), "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP %>% filter(Catalog.Number != "EC5291" & Catalog.Number != "EC5120" & Catalog.Number != "EC5193"), aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in LSP/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no interaction effects in either, so no need to run simple effects tests.
+```{r}
+#with outliers
+LSP %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+LSP %>% filter(Catalog.Number != "EC5291" & Catalog.Number != "EC5120" & Catalog.Number != "EC5193") %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+## ug 13C in LSP per g of dry soil
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in LSP/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5120 is an outlier
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; Michigan Corn at 2 months was not normally distributed, as assessed by Shapiro-Wilk’s test (p > 0.05)
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+#but IS normally distributed after removal of outlier
+LSP %>% 
+  filter(Catalog.Number != "EC5120") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+#without outlier
+LSP %>%
+  filter(Catalog.Number != "EC5120") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot Without Outliers
+```{r}
+#summary without outliers
+LSP %>% filter(Catalog.Number != "EC5120") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+
+ggboxplot(LSP %>% filter(Catalog.Number != "EC5120"), "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP %>% filter(Catalog.Number != "EC5120"), aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in LSP/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no interaction effects in either, so no need to run simple effects tests.
+```{r}
+#with outliers
+LSP %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+LSP %>% filter(Catalog.Number != "EC5120") %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+## ug 13C excess in LSP per g of dry soil
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in LSP/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.excess.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No significant interaction effects, so no need to run simple effect tests
+```{r}
+LSP %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## Percentage of 13C excess in LSP pool per g of dry soil 
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5187 is an exteme outlier
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_13Cexcess_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed with and without outlier, as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outlier
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+#without outlier
+LSP %>% 
+  filter(Catalog.Number != "EC5187") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+#without outlier
+LSP %>%
+  filter(Catalog.Number != "EC5187") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+LSP %>% filter(Catalog.Number != "EC5187") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(LSP %>% filter(Catalog.Number != "EC5187"), "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP %>% filter(Catalog.Number != "EC5187"), aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no major differences. No significant main effects or interactions.
+```{r}
+#with outliers
+LSP %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+LSP %>% filter(Catalog.Number != "EC5187") %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## wt% 13C excess of LSP
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of LSP", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5189 and EC5172 are outliers
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(wt.perc.13C.excess)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+#without outliers
+LSP %>% 
+  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+#with outliers
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+#without outliers
+LSP %>%
+  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+```
+
+### Summary and boxplot without outliers
+```{r}
+#summary
+LSP %>% filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+
+#boxplot
+ggboxplot(LSP %>% filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172"), "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP %>% filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172"), aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of LSP", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Significant two-way interactions with site and timepoint as well as crop and timepoint 
+```{r}
+#with outliers
+LSP %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+LSP %>%  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effects Test
+```{r}
+#Because there was a significant two-way interactions with site and timepoint as well as crop and timepoint, running simple two-way anovas
+
+#without outliers
+#simple two-way anova of site and timepoint for each crop; interaction effect isn't significant for either crop 
+LSP %>%  
+  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% 
+  group_by(Crop) %>% 
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outliers
+#simple two-way anova of crop and timepoint for each site; interaction effect is significant for both Michigan and Wisconsin, but with larger effect in Michigan
+LSP %>%  
+  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% 
+  group_by(Site) %>% 
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#performing simple simple main effect of crop for each timepoint; crop is significant only for 2 months at both sites 
+LSP %>%  
+  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% 
+  group_by(Site, Timepoint) %>% 
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#performing simple simple main effect of timepoint for each crop; timepoint is significant for both crops at both sites
+LSP %>%  
+  filter(Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% 
+  group_by(Site, Crop) %>% 
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## Percentage of 13C excess in LSP pool per g of dry soil 
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5187 is an exteme outlier
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_13Cexcess_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed with and without outlier, as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outlier
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+#without outlier
+LSP %>% 
+  filter(Catalog.Number != "EC5187") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+#without outlier
+LSP %>%
+  filter(Catalog.Number != "EC5187") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+LSP %>% filter(Catalog.Number != "EC5187") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(LSP %>% filter(Catalog.Number != "EC5187"), "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP %>% filter(Catalog.Number != "EC5187"), aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no major differences. No significant main effects or interactions.
+```{r}
+#with outliers
+LSP %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+LSP %>% filter(Catalog.Number != "EC5187") %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## Percentage of Total C in LSP pool per g of dry soil 
+### Summary 
+```{r}
+LSP %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(LSP, "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP, aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5187 is an exteme outlier
+outliers <- LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_C_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed only without outlier, as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outlier
+LSP %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+#without outlier
+LSP %>% 
+  filter(Catalog.Number != "EC5187") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+LSP %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+#without outlier
+LSP %>%
+  filter(Catalog.Number != "EC5187") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+LSP %>% filter(Catalog.Number != "EC5187") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(LSP %>% filter(Catalog.Number != "EC5187"), "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = LSP %>% filter(Catalog.Number != "EC5187"), aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no major differences. No significant main effects or interactions.
+```{r}
+#with outliers
+LSP %>% anova_test(dv = Pool_Pct_ug_C_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+LSP %>% filter(Catalog.Number != "EC5187") %>% anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+
+
+# Lipid
+```{r}
+#filter dataframe to just the Lipid fraction 
+Lipid <- Folch_frac %>% filter(Fraction == "Lipid") 
+```
+
+## ug C in Lipids per g of dry soil
+### Summary 
+```{r}
+Lipid %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Lipid, "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid, aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Lipids/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5067, EC5155, and EC5291 are extreme outliers
+outliers <- Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.Total.C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers - NOT normally distributed for Michigan Corn 1 year
+Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+#without outliers- IS normally distributed 
+Lipid %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+Lipid %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+Lipid %>%
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlieres 
+```{r}
+#summary without outliers
+Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291"), "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291"), aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Lipids/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers.
+```{r}
+#with outliers
+Lipid %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant three-way interaction, performing simple two-way anovas
+
+#with outliers 
+#simple two-way interaction between site and crop for each Timepoint (largest ges); the two way interaction was significant only for the 1 year Timepoint, but site is a signficant main effect for the 2 month Timepoint
+Lipid %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#with outliers
+#For 1 year samples, compute simple simple main effect of site for each crop; found site was not a statistically significant main effect for either crop at the 1 year Timepoint
+Lipid %>% filter(Timepoint == "Final") %>%
+  group_by(Timepoint, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outliers
+#For 1 year samples, compute simple simple main effect of crop for each site; found crop was not a statistically significant main effect for either site at the 1 year Timepoint
+Lipid %>% filter(Timepoint == "Final") %>%
+  group_by(Timepoint, Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#with outliers 
+#simple two-way interaction between site and timepoint for each crop; the two way interaction was significant only for switchgrass plots
+Lipid %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#with outliers
+#For switchgrass samples, compute simple simple main effect of site for each timepoint; found site was a statistically significant main effect at the 2 month timepoint in switchgrass
+Lipid %>% filter(Crop == "Switchgrass") %>%
+  group_by(Timepoint, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outliers
+#For switchgrass samples, compute simple simple main effect of timepoint for each site; found timepoint was a statistically significant main effect for sites in siwtchgrass, but with a stronger effect in Michigan than in Wisconsin
+Lipid %>% filter(Crop == "Switchgrass") %>%
+  group_by(Site, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#with outliers 
+#simple two-way interaction between crop and timepoint for each site; the two way interaction was significant only for Michigan
+Lipid %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#with outliers
+#For Michigan samples, compute simple simple main effect of crop for each timepoint; found crop was not a statistically significant main effect at either timepoint in Michigan samples
+Lipid %>% filter(Site == "Michigan") %>%
+  group_by(Timepoint, Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outliers
+#For Michigan samples, compute simple simple main effect of timepoint for each crop; found timepoint was a statistically significant main effect in switchgrass only
+Lipid %>% filter(Site == "Michigan") %>%
+  group_by(Site, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outliers 
+#simple two-way interaction between site and crop for each Timepoint; the two way interaction was not significant at either timepoint
+Lipid %>%
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outliers 
+#simple two-way interaction between site and timepoint for each crop; the two way interaction was significant only for switchgrass plots
+Lipid %>%
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outliers
+#For switchgrass samples, compute simple simple main effect of site for each timepoint; found site was a statistically significant main effect at the 2 month timepoint in switchgrass
+Lipid %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  filter(Crop == "Switchgrass") %>%
+  group_by(Timepoint, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#without outliers
+#For switchgrass samples, compute simple simple main effect of timepoint for each site; found timepoint was a statistically significant main effect for sites in switchgrass, but with a stronger effect in Michigan than in Wisconsin
+Lipid %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  filter(Crop == "Switchgrass") %>%
+  group_by(Site, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outliers 
+#simple two-way interaction between crop and timepoint for each site; the two way interaction was significant only for Michigan
+Lipid %>%
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outliers
+#For Michigan samples, compute simple simple main effect of crop for each timepoint; found crop was not a statistically significant main effect at either timepoint in Michigan samples
+Lipid %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  filter(Site == "Michigan") %>%
+  group_by(Timepoint, Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#without outliers
+#For Michigan samples, compute simple simple main effect of timepoint for each crop; found timepoint was a statistically significant main effect for both crops, but stronger in switchgrass
+Lipid %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  filter(Site == "Michigan") %>%
+  group_by(Site, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## ug 13C in Lipids per g of dry soil
+### Summary 
+```{r}
+Lipid %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Lipid, "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid, aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Lipids/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5067, EC5155, and EC5291 are extreme outliers
+outliers <- Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers - NOT normally distributed 
+Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+#without outliers
+Lipid %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+Lipid %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+Lipid %>%
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlieres 
+```{r}
+#summary without outliers
+Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291"), "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291"), aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Lipids/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers. Only have interaction effects with outliers.
+```{r}
+#with outliers
+Lipid %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Lipid %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5155" & Catalog.Number != "EC5291") %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## ug 13C excess in Lipids per g of dry soil
+### Summary 
+```{r}
+Lipid %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Lipid, "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid, aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Lipid/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5155 is an extreme outlier
+outliers <- Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.excess.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+#without outlier
+Lipid %>% 
+  filter(Catalog.Number != "EC5155") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outlier
+Lipid %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+#without outlier
+Lipid %>%
+  filter(Catalog.Number != "EC5155") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+Lipid %>% filter(Catalog.Number != "EC5155") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(Lipid %>% filter(Catalog.Number != "EC5155"), "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid %>% filter(Catalog.Number != "EC5155"), aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Lipid/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There are interactions only if the outlier is removed
+```{r}
+#with outlier
+Lipid %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Lipid %>% filter(Catalog.Number != "EC5155") %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant two-way interaction when the outlier was removed, performing simple main effects
+
+#without outliers 
+#simple main effect of site for each crop; site was significant for only corn samples
+Lipid %>% 
+  filter(Catalog.Number != "EC5155") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## wt% 13C excess for lipids
+### Summary 
+```{r}
+Lipid %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Lipid, "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid, aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt % 13C excess of lipids", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5098 and EC5287 are extreme outliers
+outliers <- Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(wt.perc.13C.excess)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+#without outlier
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+
+#Check for homogeneity of variance; was not homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outlier
+Lipid %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+#without outlier
+Lipid %>%
+   filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+Lipid %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+
+#without outlier
+ggboxplot(Lipid %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287"), "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287"), aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of lipids", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Two-way interactions are significant
+```{r}
+#with outlier
+Lipid %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Lipid %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant two-way interaction when the outlier was removed, performing simple main effects
+
+#without outliers 
+#simple main effect of site for each crop; site was not significant for crop 
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of crop for each site; crop was not significant for either site
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Site) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outliers 
+#simple main effect of site for each timepoint; site was not significant for either timepoint
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of timepoint for each site; timepoint was significant for both sites with a larger effect size in Michigan
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Site) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outliers 
+#simple main effect of crop for each timepoint; crop was significant only at 2 months
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of timepoint for each crop; timepoint was significant for both crops, with a larger effect size for corn
+Lipid %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5287") %>%
+  group_by(Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## Percentage of total C per g of dry soil 
+### Summary 
+```{r}
+Lipid %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Lipid, "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid, aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5155, EC5065, EC5189, EC5172 are extreme outliers
+outliers <- Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_C_g_soil)
+outliers
+
+#Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers, Michigan switchgrass at 2 mo is not normally distributed
+Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+#without outliers, everything is normally distributed 
+Lipid %>% 
+  filter(Catalog.Number != "EC5155" & Catalog.Number != "EC5065" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+```
+
+### Summary + Boxplot without outliers
+```{r}
+#summary without outliers
+Lipid %>% filter(Catalog.Number != "EC5155" & Catalog.Number != "EC5065" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(Lipid %>% filter(Catalog.Number != "EC5155" & Catalog.Number != "EC5065" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172"), "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid %>% filter(Catalog.Number != "EC5155" & Catalog.Number != "EC5065" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172"), aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no significant interaction effects once outliers are removed
+```{r}
+#with outliers
+Lipid %>% anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Lipid %>% filter(Catalog.Number != "EC5155" & Catalog.Number != "EC5065" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% anova_test(dv =Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## Percentage of 13C excess per g of dry soil 
+### Summary 
+```{r}
+Lipid %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Lipid, "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid, aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5126 is na extreme outliers
+outliers <- Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_13Cexcess_g_soil)
+outliers
+
+#Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers, Michigan switchgrass at 2 mo is not normally distributed
+Lipid %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+#without outliers, everything is normally distributed 
+Lipid %>% 
+  filter(Catalog.Number != "EC5126") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+Lipid %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+#without outliers
+Lipid %>%
+  filter(Catalog.Number != "EC5126") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers
+```{r}
+#summary without outliers
+Lipid %>% filter(Catalog.Number != "EC5126") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(Lipid %>% filter(Catalog.Number != "EC5126"), "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Lipid %>% filter(Catalog.Number != "EC5126"), aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers; no significant interaction effects with or without outliers
+```{r}
+#with outliers
+Lipid %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Lipid %>% filter(Catalog.Number != "EC5126") %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil , wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+
+# Metabolite
+```{r}
+#filter dataframe to just the Lipid fraction 
+Metabolite <- Folch_frac %>% filter(Fraction == "Metabolite") 
+```
+
+## ug C in Metabolites per g of dry soil
+### Summary 
+```{r}
+Metabolite %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Metabolite, "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite, aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in metabolites/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5250 and EC5098 are extreme outliers
+outliers <- Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.Total.C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers; WI Switchgrass samples are not normally distributed
+Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+#without outliers; everything normally distributed
+Metabolite %>% 
+  filter(Catalog.Number != "EC5250" & Catalog.Number != "EC5098") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+Metabolite %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+Metabolite %>%
+  filter(Catalog.Number != "EC5250" & Catalog.Number != "EC5098") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers
+```{r}
+#summary without outliers
+Metabolite %>% filter(Catalog.Number != "EC5250" & Catalog.Number != "EC5098") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+
+ggboxplot(Metabolite %>% filter(Catalog.Number != "EC5250" & Catalog.Number != "EC5098"), "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite %>% filter(Catalog.Number != "EC5250" & Catalog.Number != "EC5098"), aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in metabolites/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers. Main effects of site and crop are significant with and without outliers. No simple effects tests needed.
+```{r}
+#with outliers
+Metabolite %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Metabolite %>% filter(Catalog.Number != "EC5250" & Catalog.Number != "EC5098") %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## ug 13C in Metabolites per g of dry soil
+### Summary 
+```{r}
+Metabolite %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Metabolite, "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite, aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in metabolites/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5291 is an outlier
+outliers <- Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion, as assessed by Shapiro-Wilk’s test (p > 0.05). Normally distributed with and without outlier.
+Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+#without outlier
+Metabolite %>% 
+  filter(Catalog.Number != "EC5291") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+Metabolite %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+#without outlier
+Metabolite %>%
+  filter(Catalog.Number != "EC5291") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers
+```{r}
+#summary without outliers
+Metabolite %>% filter(Catalog.Number != "EC5291") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+
+ggboxplot(Metabolite %>% filter(Catalog.Number != "EC5291"), "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite %>% filter(Catalog.Number != "EC5291"), aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in metabolites/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers. Main effects of site and crop are significant with and without outliers; additional significant main effect of timepoint with outlier included. No simple effects tests needed.
+```{r}
+#with outliers
+Metabolite %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Metabolite %>% filter(Catalog.Number != "EC5291") %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## ug 13C excess in metabolites per g of dry soil
+### Summary 
+```{r}
+Metabolite %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Metabolite, "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite, aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in metabolites/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5086 is an outlier
+outliers <- Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.excess.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+#without outlier
+Metabolite %>% 
+  filter(Catalog.Number != "EC5086") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+#with outlier
+Metabolite %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+#without outlier - 2 month Timepoint does not have homogeneity of variance
+Metabolite %>%
+  filter(Catalog.Number != "EC5086") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+Metabolite %>% filter(Catalog.Number != "EC5086") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(Metabolite %>% filter(Catalog.Number != "EC5086"), "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite %>% filter(Catalog.Number != "EC5086"), aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in metabolites/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+```{r}
+#with outlier
+Metabolite %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Metabolite %>% filter(Catalog.Number != "EC5086") %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant two-way interaction when the outlier was removed, performing simple main effects
+
+#without outlier
+#simple main effect of crop for each site; crop was significant for only Michigan
+Metabolite %>% 
+  filter(Catalog.Number != "EC5086") %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outlier
+#simple main effect of site for each crop; site was significant for both crops, but with a stronger effect in corn
+Metabolite %>% 
+  filter(Catalog.Number != "EC5086") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## wt% 13C excess of metabolites 
+### Summary 
+```{r}
+Metabolite %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Metabolite, "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite, aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of metabolites", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5067, EC5200, or EC5250 are outliers
+outliers <- Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(wt.perc.13C.excess)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point after removal of outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+#without outliers
+Metabolite %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+#with outliers
+Metabolite %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+#without outliers - 2 month Timepoint does not have homogeneity of variance
+Metabolite %>%
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+Metabolite %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+
+#without outlier
+ggboxplot(Metabolite %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250"), "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250"), aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of metabolites", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There were significant interaction effects of site and timepoint as well as site and crop 
+```{r}
+#with outlier
+Metabolite %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Metabolite %>% filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there are significant two-way interactions, performing simple main effects
+
+#without outlier
+#simple main effect of crop for each site; crop was significant for only Wisconsin
+Metabolite %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>%
+  group_by(Site) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of site for each crop; site was significant for both crops, with larger effect size for corn
+Metabolite %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>%
+  group_by(Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+
+#without outlier
+#simple main effect of crop for each timepoint; crop was not significant for either timepoint
+Metabolite %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of timepoint for each crop; timepoint was significant for both crops, with a larger effect size in corn
+Metabolite %>% 
+  filter(Catalog.Number != "EC5067" & Catalog.Number != "EC5200" & Catalog.Number != "EC5250") %>%
+  group_by(Crop) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## Percentage of 13C excess per g of dry soil 
+### Summary 
+```{r}
+Metabolite %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Metabolite, "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite, aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+outliers <- Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_13Cexcess_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed, as assessed by Shapiro-Wilk’s test (p > 0.05).
+Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+Metabolite %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+```
+
+### Three-Way Mixed Model ANOVA
+Significant two-way interaction of site and crop
+```{r}
+Metabolite %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant two-way interaction between site and crop, performing simple main effects
+
+#simple main effect of crop for each site; crop was significant for only Michigan
+Metabolite %>% 
+  group_by(Site) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#simple main effect of site for each crop; site was significant for both crops, but with a stronger effect in corn plots
+Metabolite %>% 
+  group_by(Crop) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## Percentage of total C per g of dry soil 
+### Summary 
+```{r}
+Metabolite %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Metabolite, "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite, aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5250 is an extreme outlier
+outliers <- Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_C_g_soil)
+outliers
+
+#Check for normal distribution; normally distributed, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Metabolite %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+#without outlier; normally distributed only after removal of outlier
+Metabolite %>% 
+  filter(Catalog.Number != "EC5250") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+Metabolite %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+#without outlier
+Metabolite %>%
+  filter(Catalog.Number != "EC5250") %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+```
+
+### Summary and boxplot without outlier
+```{r}
+#Summary
+Metabolite %>% filter(Catalog.Number != "EC5250") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+
+#Boxplot
+ggboxplot(Metabolite %>% filter(Catalog.Number != "EC5250"), "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Metabolite %>% filter(Catalog.Number != "EC5250"), aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Significant two-way interaction of crop and timepoint after removal of outlier
+```{r}
+#with outlier
+Metabolite %>%  anova_test(dv =Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Metabolite %>% filter(Catalog.Number != "EC5250") %>% anova_test(dv =Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there was a significant two-way interaction between crop and timepoint, performing simple main effects
+
+#without outlier
+#simple main effect of crop for each timepoint; crop was significant at both timepoints with a stronger effect at 2 months
+Metabolite %>% 
+  filter(Catalog.Number != "EC5250") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = Pool_Pct_ug_C_g_soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outlier
+#simple main effect of timepoint for each crop; timepoint was significant for only switchgrass plots
+Metabolite %>% 
+  filter(Catalog.Number != "EC5250") %>%
+  group_by(Crop) %>%
+  anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+
+
+# Protein
+```{r}
+#filter dataframe to just the Lipid fraction 
+Protein <- Folch_frac %>% filter(Fraction == "Protein") 
+```
+
+## ug C in protein per g of dry soil
+### Summary 
+```{r}
+Protein %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Protein, "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein, aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in protein/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5284 and EC5250 are outliers
+outliers <- Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.Total.C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+#without outliers
+Protein %>% 
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was NOT homogeneous at 2 month Timepoint as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+Protein %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+Protein %>%
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers 
+```{r}
+#summary without outliers
+Protein %>% filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(Protein %>% filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250"), "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein %>% filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250"), aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in protein/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers. Three way interaction between site, crop, and Timepoint is significant with and without outliers 
+```{r}
+#with outliers
+Protein %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Protein %>% filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant three-way interaction, performing simple two-way interactions 
+
+#with outliers 
+#simple two-way interaction between site and Timepoint for each crop (largest ges); the two way interaction was significant only for switchgrass
+Protein %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#with outliers
+#For switchgrass, compute simple simple main effect of site at each Timepoint: found for switchgrass samples, site was a statistically significant main effect for only the 1 year Timepoint
+Protein %>% filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outliers
+#For switchgrass, compute simple simple main effect of timepoint at each site: found for switchgrass samples, timepoint was a statistically significant main effect for only the Wisconsin site
+Protein %>% filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within= c(Timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#with outliers 
+#simple two-way interaction between site and crop for timepoint; the two way interaction was significant only at 2 months
+Protein %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#with outliers
+#For 2 month samples, compute simple simple main effect of site for each crop: found for 2 month samples, site was a statistically significant main effect only for corn
+Protein %>% filter(Timepoint == "2Month") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outliers
+#For 2 month samples, compute simple simple main effect of crop for each site: found for 2 month samples, crop was significant for both sites, but with a stronger effect in Wisconsin soils
+Protein %>% filter(Timepoint == "2Month") %>%
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#with outliers 
+#simple two-way interaction between crop and timepoint for each site; the two way interaction was significant for both sites
+Protein %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#with outliers
+#Compute simple simple main effect of crop at each timepoint: found for switchgrass samples, crop was statistically significant main effect for 2 month samples at both sites
+Protein %>%
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outliers
+#Compute simple simple main effect of timepoint for each crop: found that site was a significant effect for corn at both timepoints and for switchgrass only at the 1 year timepoint
+Protein %>% 
+  group_by(Timepoint, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+
+#without outliers 
+#simple two-way interaction between site and Timepoint for each crop (largest ges); the two way interaction was significant only for switchgrass
+Protein %>%
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outliers
+#For switchgrass, compute simple simple main effect of site at each Timepoint: found for switchgrass samples, site was a statistically significant main effect for only the 1 year Timepoint
+Protein %>% filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outliers
+#For switchgrass, compute simple simple main effect of timepoint at each site: found for switchgrass samples, timepoint was a statistically significant main effect for only Wisconsin
+Protein %>% filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  filter(Crop == "Switchgrass") %>%
+  group_by(Crop, Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outliers 
+#simple two-way interaction between site and crop for timepoint; the two way interaction was significant only at 2 months
+Protein %>%
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site, Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outliers
+#For 2 month samples, compute simple simple main effect of site for each crop: found for 2 month samples, site was a statistically significant main effect only for corn
+Protein %>% 
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  filter(Timepoint == "2Month") %>%
+  group_by(Crop, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#without outliers
+#For 2 month samples, compute simple simple main effect of crop for each site: found for 2 month samples, crop was significant for both sites, but with a stronger effect in Wisconsin soils
+Protein %>% 
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  filter(Timepoint == "2Month") %>%
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outliers 
+#simple two-way interaction between crop and timepoint for each site; the two way interaction was significant for both sites
+Protein %>%
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  group_by(Site) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outliers
+#Compute simple simple main effect of crop at each timepoint: found for switchgrass samples, crop was statistically significant main effect for 2 month samples at both sites
+Protein %>%
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  group_by(Site, Timepoint) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#without outliers
+#Compute simple simple main effect of timepoint for each crop: found that site was a significant effect for corn at both timepoints and for switchgrass only at the 1 year timepoint
+Protein %>% 
+  filter(Catalog.Number != "EC5284" & Catalog.Number != "EC5250") %>% 
+  group_by(Timepoint, Crop) %>%
+  anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## ug 13C in protein per g of dry soil
+### Summary 
+```{r}
+Protein %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Protein, "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein, aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in protein/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5250 is an outlier
+outliers <- Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+#without outlier
+Protein %>% 
+  filter(Catalog.Number != "EC5250") %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was NOT homogeneous at 2 month Timepoint as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+Protein %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+#without outlier
+Protein %>%
+  filter(Catalog.Number != "EC5250") %>% 
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers 
+```{r}
+#summary without outliers
+Protein %>% filter(Catalog.Number != "EC5250") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(Protein %>% filter(Catalog.Number != "EC5250"), "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein %>% filter(Catalog.Number != "EC5250"), aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in protein/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without the outlier to evaluate sensitivity to outliers. Two way interactions between site and crop and between crop and timepoint were significant with and without the outlier.
+```{r}
+#with outliers
+Protein %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+Protein %>% filter(Catalog.Number != "EC5250") %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effects Tests
+```{r}
+#Running simple main effects 
+
+#without outlier
+#Compute simple main effect of site for each crop: crop was a statistically significant main effect for only corn plots
+Protein %>% filter(Catalog.Number != "EC5250") %>% 
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, between = c(Site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#without outlier
+#Compute simple main effect of crop for each site: significant for both sites, but stronger effect in Wisconsin
+Protein %>% filter(Catalog.Number != "EC5250") %>% 
+  group_by(Site) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outlier
+#simple main effect of crop for each timepoint; crop was significant only for the 2 month timepoint
+Protein %>%
+  filter(Catalog.Number != "EC5250") %>% 
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, between = c(Crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#simple main effect of timepoint for each crop; timepoint was significant for both crops, with a stronger effect in switchgrass
+Protein %>%
+  filter(Catalog.Number != "EC5250") %>% 
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## ug 13C excess in proteins per g of dry soil
+### Summary 
+```{r}
+Protein %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Protein, "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein, aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in proteins/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5055 is an outlier
+outliers <- Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.excess.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+#without outlier
+Protein %>% 
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+Protein %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+#without outlier
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+Protein %>% filter(Catalog.Number != "EC5055") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+
+#without outlier
+ggboxplot(Protein %>% filter(Catalog.Number != "EC5055"), "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein %>% filter(Catalog.Number != "EC5055"), aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in proteins/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+```{r}
+#with outlier
+Protein %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Protein %>% filter(Catalog.Number != "EC5055") %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests
+```{r}
+#Because there were significant two-way interactions, performing simple main effects
+
+#with outlier
+#simple main effect of Timepoint for each site; Timepoint was not significant for either site
+Protein %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outlier
+#simple main effect of site for each timepoint; site was not significant for either timepoint
+Protein %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, between = Site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#with outlier
+#simple main effect of Timepoint for each crop; Timepoint was significant both crops with a stronger effect in switchgrass plots
+Protein %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#with outlier
+#simple main effect of crop for each timepoint; crop was significant only at 2 months
+Protein %>% 
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+  
+#without outlier
+#simple main effect of Timepoint for each site; Timepoint was not significant for either site
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of site for each timepoint; site was not significant at each timepoint
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, between = Site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#without outlier
+#simple main effect of Timepoint for each crop; Timepoint was signficant for both crops, with a greater effect in corn plots
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of crop for each timepoint; crop was significant only at 2 months
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+
+#without outlier
+#simple main effect of site for each crop; site was not significant for either crop
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Crop) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = Site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of crop for each site; crop was significant at both sites, with a stronger effect in Michigan 
+Protein %>%
+  filter(Catalog.Number != "EC5055") %>%
+  group_by(Site) %>%
+  anova_test(dv = ug.13C.excess.per.g.dry.soil, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+## wt% 13C excess for protein
+### Summary 
+```{r}
+Protein %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Protein, "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein, aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of proteins", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5284 is an outlier
+outliers <- Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(wt.perc.13C.excess)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+#without outlier
+Protein %>% 
+  filter(Catalog.Number != "EC5284") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+Protein %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+#without outlier
+Protein %>%
+  filter(Catalog.Number != "EC5284") %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+Protein %>% filter(Catalog.Number != "EC5284") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+
+#without outlier
+ggboxplot(Protein %>% filter(Catalog.Number != "EC5284"), "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein %>% filter(Catalog.Number != "EC5284"), aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess of proteins", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Only main effect of site is significant 
+```{r}
+#with outlier
+Protein %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Protein %>% filter(Catalog.Number != "EC5284") %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## Percentage of 13C excess per g of dry soil 
+### Summary 
+```{r}
+Protein %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_13Cexcess_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Protein, "site_crop", "Pool_Pct_ug_13Cexcess_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein, aes(x = factor(site_crop), y = Pool_Pct_ug_13Cexcess_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; no outliers
+outliers <- Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_13Cexcess_g_soil)
+outliers
+
+#Check for normal distribution; was not normally distributed in MI corn at 2 months, as assessed by Shapiro-Wilk’s test (p > 0.05).
+Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_13Cexcess_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+Protein %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_13Cexcess_g_soil ~ Site*Crop)
+```
+
+### Three-Way Mixed Model ANOVA
+Two way interactions between site and crop, site and Timepoint, and crop and Timepoint were significant
+```{r}
+Protein %>% anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests 
+```{r}
+#Because there was a significant two-way interactions, performing simple main effects
+
+#simple main effect of Timepoint for each site; Timepoint was not significant for either site
+Protein %>%
+  group_by(Site) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of site for each timepoint; site was not significant for either timepoint
+Protein %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, between = Site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+
+#simple main effect of Timepoint for each crop; Timepoint was only significant for switchgrass
+Protein %>% 
+  group_by(Crop) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of crop for each timepoint; crop was significant at both timepoints, with a stronger effect at 2 months
+Protein %>% 
+  group_by(Timepoint) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, wid = id, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+  
+#simple main effect of site for each crop; site was only significant for corn samples
+Protein %>%
+  group_by(Crop) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, between = Site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of crop at each site; crop was sigificant at both sites with a stronger effect in Michigan
+Protein %>%
+  group_by(Site) %>%
+  anova_test(dv = Pool_Pct_ug_13Cexcess_g_soil, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+
+## Percentage of C per g of dry soil 
+### Summary 
+```{r}
+Protein %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(Protein, "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein, aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5159 is an outlier
+outliers <- Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(Pool_Pct_ug_C_g_soil)
+outliers
+
+#Check for normal distribution; was normally distributed, as assessed by Shapiro-Wilk’s test (p > 0.05) with and without outlier.
+#with outlier
+Protein %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+#without outlier
+Protein %>% 
+  filter(Catalog.Number != "EC5159") %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(Pool_Pct_ug_C_g_soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+Protein %>%
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+#without outlier
+Protein %>%
+  filter(Catalog.Number != "EC5159") %>% 
+  group_by(Timepoint) %>%
+  levene_test(Pool_Pct_ug_C_g_soil ~ Site*Crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+Protein %>% filter(Catalog.Number != "EC5159") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(Pool_Pct_ug_C_g_soil, type = "mean_sd")
+
+#boxplot
+ggboxplot(Protein %>% filter(Catalog.Number != "EC5159"), "site_crop", "Pool_Pct_ug_C_g_soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = Protein %>% filter(Catalog.Number != "EC5159"), aes(x = factor(site_crop), y = Pool_Pct_ug_C_g_soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Percentage of Total C", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Two way interaction between crop and timepoint was significant
+```{r}
+#with outlier
+Protein %>% anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outlier
+Protein %>% filter(Catalog.Number != "EC5159") %>% anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests 
+```{r}
+#Because there was a significant two-way interactions, performing simple main effects
+
+#without outlier
+#simple main effect of Timepoint for each crop; Timepoint was significant for both crops, with a stronger effect for switchgrass plots
+Protein %>% 
+  filter(Catalog.Number != "EC5159") %>% 
+  group_by(Crop) %>%
+  anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of crop for each timepoint; crop was significant only at 2 months
+Protein %>% 
+  filter(Catalog.Number != "EC5159") %>% 
+  group_by(Timepoint) %>%
+  anova_test(dv = Pool_Pct_ug_C_g_soil, wid = id, between = Crop) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+
+
+
+# Whole Soil
+```{r}
+#filter dataframe to just the WS fraction 
+WS <- Folch_frac %>% filter(Fraction == "WS") 
+```
+
+## ug C per g of dry soil
+### Summary 
+```{r}
+WS %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(WS, "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS, aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5098, EC5189, and EC5172 are outliers
+outliers <- WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.Total.C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+#without outliers
+WS %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.Total.C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+WS %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+WS %>%
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.Total.C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers 
+```{r}
+#summary without outliers
+WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.Total.C.per.g.dry.soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172"), "site_crop", "ug.Total.C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172"), aes(x = factor(site_crop), y = ug.Total.C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without outliers to evaluate sensitivity to outliers. Simple main effect of site is significant.
+```{r}
+#with outliers
+WS %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189" & Catalog.Number != "EC5172") %>% anova_test(dv = ug.Total.C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## ug 13C per g of dry soil
+### Summary 
+```{r}
+WS %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(WS, "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS, aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5098 and EC5189 are outliers
+outliers <- WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+#without outliers
+WS %>% 
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189") %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.per.g.dry.soil)
+
+#Check for homogeneity of variance; was NOT homogeneous at 2 month Timepoint as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+WS %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+#without outliers
+WS %>%
+  filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189") %>% 
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.per.g.dry.soil ~ Site*Crop)
+```
+
+### Summary + Boxplot without outliers 
+```{r}
+#summary without outliers
+WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.per.g.dry.soil, type = "mean_sd")
+
+#without outliers
+ggboxplot(WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189"), "site_crop", "ug.13C.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189"), aes(x = factor(site_crop), y = ug.13C.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Run mixed model with and without the outlier to evaluate sensitivity to outliers. Site and timepoint are significant main effects.
+```{r}
+#with outliers
+WS %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+WS %>% filter(Catalog.Number != "EC5098" & Catalog.Number != "EC5189") %>% anova_test(dv = ug.13C.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## ug 13C excess per g of dry soil
+### Summary 
+```{r}
+WS %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(ug.13C.excess.per.g.dry.soil, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(WS, "site_crop", "ug.13C.excess.per.g.dry.soil",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS, aes(x = factor(site_crop), y = ug.13C.excess.per.g.dry.soil, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+outliers <- WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(ug.13C.excess.per.g.dry.soil)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(ug.13C.excess.per.g.dry.soil)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+WS %>%
+  group_by(Timepoint) %>%
+  levene_test(ug.13C.excess.per.g.dry.soil ~ Site*Crop)
+```
+
+### Three-Way Mixed Model ANOVA
+Site and timepoint are significant main effects.
+```{r}
+WS %>% anova_test(dv = ug.13C.excess.per.g.dry.soil, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+
+## wt% 13C excess 
+### Summary 
+```{r}
+WS %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(WS, "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS, aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for running a mixed model ANOVA
+```{r}
+#Check for outliers; EC5159, EC5143, EC5075, and EC5098 are outliers
+outliers <- WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  identify_outliers(wt.perc.13C.excess)
+outliers
+
+#Check for normal distriubtion; was normally distributed at each time point only after removal of outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+WS %>% 
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+#without outliers
+WS %>% 
+  filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098") %>%
+  group_by(Site, Crop, Timepoint) %>%
+  shapiro_test(wt.perc.13C.excess)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+WS %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+#without outliers
+WS %>%
+  filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098") %>%
+  group_by(Timepoint) %>%
+  levene_test(wt.perc.13C.excess ~ Site*Crop)
+```
+
+### Summary + Boxplot without outlier
+```{r}
+#summary without outlier
+WS %>% filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098") %>% group_by(Site, Crop, Timepoint) %>% get_summary_stats(wt.perc.13C.excess, type = "mean_sd")
+
+#without outlier
+ggboxplot(WS %>% filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098"), "site_crop", "wt.perc.13C.excess",
+     fill = "Timepoint", palette = c("white", "gray")) +
+  geom_point(data = WS %>% filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098"), aes(x = factor(site_crop), y = wt.perc.13C.excess, colour = factor(site_crop), shape = factor(Timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "wt% 13C excess", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is a significant two-way interaction between site and timepoint.
+```{r}
+#with outliers
+WS %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+
+#without outliers
+WS %>% filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098") %>% anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint, between = c(Site, Crop))
+```
+
+### Simple Effect Tests 
+```{r}
+#Because there was a significant two-way interactions, performing simple main effects
+
+#without outliers
+#simple main effect of timepoint for each site; timepoint was significant for both sites, with a stronger effect for Michigan
+WS %>% 
+  filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098") %>%
+  group_by(Site) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, within = Timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+#simple main effect of site for each timepoint; site was significant at both timepoints, but with a stronger effect at 2 months
+WS %>% 
+  filter(Catalog.Number != "EC5159" & Catalog.Number != "EC5143" & Catalog.Number != "EC5075" & Catalog.Number != "EC5098") %>%
+  group_by(Timepoint) %>%
+  anova_test(dv = wt.perc.13C.excess, wid = id, between = Site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") 
+```
+
+
+# Figure 2
+```{r}
+colorpallete<- c("chocolate4", "orange", "purple","#007308", "grey")
+
+# ug 13C excess
+Folch_frac_0 <- Folch_frac %>% filter(Fraction != "WS") %>% group_by(Fraction) %>% summarize(mean.ug13C = mean(ug.13C.per.g.dry.soil), sd.ug13C = sd(ug.13C.excess.per.g.dry.soil)) %>% mutate(Fraction2 = ifelse(Fraction == "LSP", "Unextracted MAOM", Fraction), Type = factor(Fraction2, levels = c("Unextracted MAOM", "Metabolite", "Protein", "Lipid", "CRUD")), Group2 = factor(Fraction2, levels = c("Unextracted MAOM", "CRUD", "Lipid", "Protein", "Metabolite")))
+
+g0<-ggplot(data=Folch_frac_0, aes(x=mean.ug13C, xmin = mean.ug13C - sd.ug13C, xmax = mean.ug13C + sd.ug13C, y = Group2, fill=Type))
+
+Dist0<-g0+ geom_bar(stat="identity") +
+  geom_errorbarh(stat =  "identity", height = 0.25) +
+  xlab (expression(paste(mu, g, " "^13, "C excess ", g^-1,"dry soil" ))) +
+  scale_fill_manual(values=colorpallete, name = "Type")+
+  theme_bw() +
+  theme(axis.title.x=element_blank())+
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.key = element_blank(),
+        text = element_text(size = 14, face="bold"),
+        strip.text = element_text(size = 18, colour = "black"),
+        legend.text=element_text(colour="black",size=18,face="plain"),
+        legend.title=element_text(colour="black",size=18,face="plain"),
+        axis.text.x =element_text(colour="black",size=18,face="bold"),
+        axis.text.y = element_text(colour="black",size=18,face="bold"),
+        axis.title.x = element_text(colour="black",size=24,face="plain"),
+        axis.title.y = element_blank())
+Dist0
+
+
+#mean wt% 13C excess
+Folch_frac_1 <- Folch_frac %>% filter(Fraction != "WS") %>% group_by(Fraction) %>% summarize(mean.wt.perc = mean(wt.perc.13C.excess), sd.wt.perc = sd(wt.perc.13C.excess)) %>% mutate(Fraction2 = ifelse(Fraction == "LSP", "Unextracted MAOM", Fraction), Type = factor(Fraction2, levels = c("Unextracted MAOM", "Metabolite", "Protein", "Lipid", "CRUD")), Group2 = factor(Fraction2, levels = c("Unextracted MAOM", "CRUD", "Lipid", "Protein", "Metabolite")))
+
+g1<-ggplot(data=Folch_frac_2, aes(x=mean.wt.perc, xmin = mean.wt.perc - sd.wt.perc, xmax = mean.wt.perc + sd.wt.perc, y = Group2, fill=Type))
+
+Dist1<- g1+ geom_bar(stat="identity") +
+  geom_errorbarh(stat =  "identity", height = 0.25) +
+  xlab(expression(paste("wt. % "^13, "C excess"))) +
+  scale_fill_manual(values=colorpallete, name = "Type")+
+  theme_bw() +
+  theme(axis.title.x=element_blank())+
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.key = element_blank(),
+        text = element_text(size = 14, face="bold"),
+        strip.text = element_text(size = 18, colour = "black"),
+        legend.text=element_text(colour="black",size=18,face="plain"),
+        legend.title=element_text(colour="black",size=18,face="plain"),
+        axis.text.x =element_text(colour="black",size=18,face="bold"),
+        axis.text.y = element_text(colour="black",size=18,face="bold"),
+        axis.title.x = element_text(colour="black",size=24,face="plain"),
+        axis.title.y = element_blank())
+Dist1
+
+
+#mean ug C 
+Folch_frac_2 <- Folch_frac %>% filter(Fraction != "WS") %>% group_by(Fraction) %>% summarize(mean.ugC = mean(ug.Total.C.per.g.dry.soil), sd.ugC = sd(ug.Total.C.per.g.dry.soil)) %>% mutate(Fraction2 = ifelse(Fraction == "LSP", "Unextracted MAOM", Fraction), Type = factor(Fraction2, levels = c("Unextracted MAOM", "Metabolite", "Protein", "Lipid", "CRUD")), Group2 = factor(Fraction2, levels = c("Unextracted MAOM", "CRUD", "Lipid", "Protein", "Metabolite")))
+
+g2<-ggplot(data=Folch_frac_2, aes(x=mean.ugC, xmin = mean.ugC - sd.ugC, xmax = mean.ugC + sd.ugC, y = Group2, fill=Type))
+
+Dist2<- g2+ geom_bar(stat="identity") +
+  geom_errorbarh(stat =  "identity", height = 0.25) +
+  xlab (expression(paste(mu, g, " C ", g^-1,"dry soil" ))) +
+  scale_fill_manual(values=colorpallete, name = "Type")+
+  theme_bw() +
+  theme(axis.title.x=element_blank())+
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.key = element_blank(),
+        text = element_text(size = 14, face="bold"),
+        strip.text = element_text(size = 18, colour = "black"),
+        legend.text=element_text(colour="black",size=18,face="plain"),
+        legend.title=element_text(colour="black",size=18,face="plain"),
+        axis.text.x =element_text(colour="black",size=18,face="bold"),
+        axis.text.y = element_text(colour="black",size=18,face="bold"),
+        axis.title.x = element_text(colour="black",size=24,face="plain"),
+        axis.title.y = element_blank())
+Dist2
+
+#stacked bar 2 month
+Folch_frac_3 <- Folch_frac %>% filter(Fraction != "WS") %>% mutate(soil_crop = case_when(site_crop == "Michigan Corn" ~ "Sandy Corn", site_crop == "Michigan Switchgrass" ~ "Sandy Switchgrass", site_crop == "Wisconsin Corn" ~ "Silty Corn", site_crop == "Wisconsin Switchgrass" ~ "Silty Switchgrass")) %>% group_by(soil_crop, Timepoint, Fraction) %>% summarize(mean.pool = mean(Pool_Pct_ug_13Cexcess_g_soil), sd.pool = sd(Pool_Pct_ug_13Cexcess_g_soil)) %>% mutate(Fraction2 = ifelse(Fraction == "LSP", "Unextracted MAOM", Fraction), Type = factor(Fraction2, levels = c("Metabolite", "Protein", "Lipid", "CRUD", "Unextracted MAOM")))
+
+g3<-ggplot(data=Folch_frac_3 %>% filter(Timepoint == "2Month"), aes(x = soil_crop, y = mean.pool, fill=Type))
+
+Dist3<- g3+ geom_bar(stat="identity") +
+  ylab (expression(paste("Proportion of recovered "^13, "C"))) +
+  scale_fill_manual(values=colorpallete, name = "Type")+
+  geom_text(
+    aes(label = percent(mean.pool, accuracy = 0.1)),
+    position = position_fill(0.5)
+  )+
+  theme_bw() +
+  theme(axis.title.x=element_blank())+
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.key = element_blank(),
+        text = element_text(size = 14, face="bold"),
+        strip.text = element_text(size = 18, colour = "black"),
+        legend.text=element_text(colour="black",size=18,face="plain"),
+        legend.title=element_text(colour="black",size=18,face="plain"),
+        axis.text.x =element_text(colour="black",size=18,face="plain", angle = 45, hjust = 0.9),
+        axis.text.y = element_text(colour="black",size=18,face="plain"),
+        axis.title.y = element_text(colour="black",size=24,face="plain"),
+        axis.title.x = element_blank())
+Dist3
+
+
+g4<-ggplot(data=Folch_frac_3 %>% filter(Timepoint == "Final"), aes(x = soil_crop, y = mean.pool, fill=Type))
+
+Dist4<- g4+ geom_bar(stat="identity") +
+  ylab (expression(paste("Proportion of recovered "^13, "C"))) +
+  scale_fill_manual(values=colorpallete, name = "Type")+
+  geom_text(
+    aes(label = percent(mean.pool, accuracy = 0.1)),
+    position = position_fill(0.5)
+  )+
+  theme_bw() +
+  theme(axis.title.x=element_blank())+
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.key = element_blank(),
+        text = element_text(size = 14, face="bold"),
+        strip.text = element_text(size = 18, colour = "black"),
+        legend.text=element_text(colour="black",size=18,face="plain"),
+        legend.title=element_text(colour="black",size=18,face="plain"),
+        axis.text.x =element_text(colour="black",size=18,face="plain", angle = 45, hjust = 0.9),
+        axis.text.y = element_text(colour="black",size=18,face="plain"),
+        axis.title.y = element_text(colour="black",size=24,face="plain"),
+        axis.title.x = element_blank())
+Dist4
+
+img = figpatch::fig("plots/Folch.tiff") 
+
+pw1 = Dist1 / Dist2 
+pw3 = Dist3 | Dist4 
+pw2 = wrap_plots(wrap_elements(full = pw1), plot_spacer(), pw3, widths = c(1.5, 0.2, 1.1)) 
+pw4 = wrap_plots(img, pw2) 
+pw4 + plot_annotation(tag_levels = 'a') & 
+  theme(plot.tag = element_text(size = 18, face = "bold")) 
+```
+

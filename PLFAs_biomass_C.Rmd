@@ -1,0 +1,3935 @@
+---
+title: "PLFA analysis"
+author: "Kaitlin Rempfert"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged 
+    number_sections: yes 
+    css: stylesheet.css 
+    toc: yes 
+    toc_float: true 
+    toc_depth: 3 
+    code_folding: show 
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load required packages
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+library(khroma)
+
+knitr::opts_chunk$set(echo = TRUE, cache = F)
+```
+
+#Import Data
+
+## Import Metadata
+```{r}
+#read in metadata
+meta <- readxl::read_xlsx("data/incubation_metadata_w_qc.xlsx")
+#filter to just labeled samples
+meta_labeled <- meta %>% filter(amendment == "13C_Gluc" & !is.na(site)) %>% filter(polarity == "positive") %>% select(catalog_number, site, crop, timepoint, group, block) %>% mutate(site_crop = case_when(
+  site == "Michigan" & crop == "Corn" ~ "MI CRN",
+  site == "Michigan" & crop == "Switchgrass"~ "MI SWG",
+  site == "Wisconsin" & crop == "Corn" ~ "WI CRN",
+  site == "Wisconsin" & crop == "Switchgrass" ~ "WI SWG"
+), 
+site_crop = factor(site_crop, levels = c("MI CRN", "MI SWG", "WI CRN", "WI SWG")),
+soil_crop = case_when(
+  site == "Michigan" & crop == "Corn" ~ "Sandy Corn",
+  site == "Michigan" & crop == "Switchgrass"~ "Sandy Switchgrass",
+  site == "Wisconsin" & crop == "Corn" ~ "Silty Corn",
+  site == "Wisconsin" & crop == "Switchgrass" ~ "Silty Switchgrass"
+), 
+soil_crop = factor(soil_crop, levels = c("Sandy Corn", "Sandy Switchgrass", "Silty Corn", "Silty Switchgrass")),
+id = paste0(site ,"_", crop, "_", block))
+
+#vectors of catalog_numbers to include
+#2month
+meta_labeled_2m <- meta_labeled %>% filter(timepoint == "2Month")
+include_2m <- meta_labeled_2m$catalog_number
+#1year
+meta_labeled_1y <- meta_labeled %>% filter(timepoint == "Final")
+include_1y <- meta_labeled_1y$catalog_number
+
+meta_labeled <- meta_labeled %>% select(-timepoint)
+```
+
+## Import ug C PLFA data for labeled samples
+```{r}
+#labeled, 2 month
+labeled_2m_all <- readxl::read_excel("data/PLFAs/13C_gluc_nmolLipid_pergDrySoil_2month.xlsx", sheet = 1) %>% select(-`Grand Total`) 
+#remove grand total row
+labeled_2m_all <- labeled_2m_all[-c(21),] %>% dplyr::rename("catalog_number" = "Row Labels") %>% mutate(timepoint = "2month")
+
+#labeled, 1 year 
+labeled_1y_all <- readxl::read_excel("data/PLFAs/13C_gluc_nmolLipid_pergDrySoil_1year.xlsx", sheet = 1)  %>% dplyr::rename("catalog_number" = "Sample") %>% mutate(timepoint = "1year")
+
+#combine 2 month and 1 year data
+labeled_all <- plyr::rbind.fill(labeled_2m_all, labeled_1y_all) 
+```
+
+## Import ug 13C excess PLFA data for labeled samples
+```{r}
+#13C, 2 month
+excess_2m <- readxl::read_excel("data/PLFAs/13C soil incubation 2 mo PLFA.xlsx", sheet = 3) %>% select(c(`Sample ID...2`, `ug lipid excess 13C *g dry soil`, `Component...20`)) %>% dplyr::rename("catalog_number" = "Sample ID...2", "excess_13C" = "ug lipid excess 13C *g dry soil", "Component" = "Component...20") %>% filter(!is.na(excess_13C)) %>% mutate(timepoint = "2month") %>% filter(catalog_number %in% include_2m)
+
+#13C, 1 year 
+excess_1y <- readxl::read_excel("data/PLFAs/EC1year_PLFA_calcs.xlsx", sheet = 3) %>% select(c(`Sample ID...2`, `ug lipid excess 13C *g dry soil`, `Component...20`)) %>% dplyr::rename("catalog_number" = "Sample ID...2", "excess_13C" = "ug lipid excess 13C *g dry soil", "Component" = "Component...20") %>% filter(!is.na(excess_13C)) %>% mutate(timepoint = "1year") %>% filter(catalog_number %in% include_1y)
+
+#combine, average duplicate measurements, and then pivot data wider so that each "Component" is a separate column 
+excess_all <- plyr::rbind.fill(excess_2m, excess_1y) %>% group_by(catalog_number, timepoint, Component) %>% mutate(excess_13C = mean(excess_13C, na.rm = TRUE)) %>% distinct() %>% ungroup() %>% group_by(catalog_number, timepoint) %>% pivot_wider(names_from= "Component", values_from = "excess_13C") %>% ungroup() 
+```
+
+## Import ug 13C PLFA data for labeled samples
+```{r}
+#13C, 2 month
+abundance_13C_2m <- readxl::read_excel("data/PLFAs/13C soil incubation 2 mo PLFA.xlsx", sheet = 3) %>% select(c(`Sample ID...2`, `ug lipid total 13C *g dry soil`, `Component...20`)) %>% dplyr::rename("catalog_number" = "Sample ID...2", "ug_13C" = "ug lipid total 13C *g dry soil", "Component" = "Component...20") %>% filter(!is.na(ug_13C)) %>% mutate(timepoint = "2month") %>% filter(catalog_number %in% include_2m)
+
+#13C, 1 year 
+abundance_13C_1y <- readxl::read_excel("data/PLFAs/EC1year_PLFA_calcs.xlsx", sheet = 3) %>% select(c(`Sample ID...2`, `ug lipid total 13C *g dry soil`, `Component...20`)) %>% dplyr::rename("catalog_number" = "Sample ID...2", "ug_13C" = "ug lipid total 13C *g dry soil", "Component" = "Component...20") %>% filter(!is.na(ug_13C)) %>% mutate(timepoint = "1year") %>% filter(catalog_number %in% include_1y)
+
+#combine, average duplicate measurements, and then pivot data wider so that each "Component" is a separate column 
+abundance_13C_all <- plyr::rbind.fill(abundance_13C_2m, abundance_13C_1y) %>% group_by(catalog_number, timepoint, Component) %>% mutate(ug_13C = mean(ug_13C, na.rm = TRUE)) %>% distinct() %>% ungroup() %>% group_by(catalog_number, timepoint) %>% pivot_wider(names_from= "Component", values_from = "ug_13C") %>% ungroup() 
+```
+
+## Import PLFA wt% 13C excess for labeled samples
+```{r}
+#13C, 2 month
+excess_perc_2m <- readxl::read_excel("data/PLFAs/13C soil incubation 2 mo PLFA.xlsx", sheet = 3) %>% select(c(`Sample ID...2`, `Excess 13C wt%`, `Component...20`)) %>% dplyr::rename("catalog_number" = "Sample ID...2", "excess_13C_perc" = "Excess 13C wt%", "Component" = "Component...20") %>% filter(!is.na(excess_13C_perc)) %>% mutate(timepoint = "2month") %>% filter(catalog_number %in% include_2m)
+
+#13C, 1 year 
+excess_perc_1y <- readxl::read_excel("data/PLFAs/EC1year_PLFA_calcs.xlsx", sheet = 3) %>% select(c(`Sample ID...2`, `Excess 13C wt%`, `Component...20`)) %>% dplyr::rename("catalog_number" = "Sample ID...2", "excess_13C_perc" = "Excess 13C wt%", "Component" = "Component...20") %>% filter(!is.na(excess_13C_perc)) %>% mutate(timepoint = "1year") %>% filter(catalog_number %in% include_1y)
+
+#combine, average duplicate measurements, and then pivot data wider so that each "Component" is a separate column 
+excess_perc_all <- rbind(excess_perc_2m, excess_perc_1y) %>% group_by(catalog_number, timepoint, Component) %>% mutate(excess_13C_perc = mean(excess_13C_perc, na.rm = TRUE)) %>% distinct() %>% ungroup() %>% group_by(catalog_number, timepoint) %>% pivot_wider(names_from= "Component", values_from = "excess_13C_perc") %>% ungroup() 
+```
+
+## Import whole soil Folch data 
+```{r}
+#read in irMS data for 13C-labeled samples at 2 month Timepoint 
+Folch_frac_2mo <- readxl::read_excel("data/Folch/Folch_pool_dilution_ready.xlsx", .name_repair = "universal") %>% filter(Amendment == "13C-Gluc")
+
+#read in irMS data for 13C-labeled samples at 1 year Timepoint 
+Folch_frac_Final <- readxl::read_excel("data/Folch/Folch_pool_dilution_ready.xlsx", sheet = 2, .name_repair = "universal") %>% filter(Amendment == "13C-Gluc")
+
+#combine Timepoints
+# extract column names of the dataframes
+cols_2mo <- names(Folch_frac_2mo)
+cols_Final <- names(Folch_frac_Final)
+# find the intersection of both column name vectors
+cols_intersection <- intersect(cols_2mo, cols_Final)
+# subset the initial dataframes
+Folch_frac_2mo_sub <- Folch_frac_2mo[,cols_intersection]
+Folch_frac_Final_sub <- Folch_frac_Final[,cols_intersection]
+#bind together subsetted dataframes
+Folch_frac <- rbind(Folch_frac_2mo_sub, Folch_frac_Final_sub)
+```
+
+
+# Reformat Data
+
+## PLFA ug C/g soil
+### Calculate total PLFAs, biomass proxy PLFAs, and microbial group PLFAs
+Note: we followed the protocol of Bailey et al. 2002, summing only the saturated PLFAs less than 20 C in length, the monounsaturated PLFAs less than 18 C, and the polyunsaturated PLFAs less than 20 C. In this paper, they found a linear relationship (r2 = 0.77) between these summed PLFAs and C from a chloroform fumigation extraction flush. 
+```{r}
+#first get total PLFA after removing fatty acid standard 19:0
+labeled_all <- labeled_all %>% select(-`c19:0`) %>% rowwise() %>% mutate(Total = sum(c_across(where(is.numeric)), na.rm = TRUE))
+
+#then get sum of biomass proxy PLFAs (see above for qualifying PLFAs)
+labeled_all <- labeled_all %>% mutate(biomass_PLFAs = sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `12Me16:0`, `2-OH 12:0`, `2-OH 16:1`, `a15:0`, `a17:0`, `br15:1`, `br16:1`, `c12:0`, `c14:0`, `c15:0`, `c15:1`, `c16:0`, `c16:1w7t`, `c16:1w9c/7c`, `c17:0`, `c17:1w6c`, `c18:0`, `c18:1w7t/5c`, `c18:1w9c`, `c18:1w9t/7c`, `c18:2w6c/6t`, `c18:3w6/3w3`, `c20:0`, `c20:2w6`, `c20:3w3`, `c20:3w6`, `c20:4w6`, `c20:5w3`, `cy17:0`, `cy19:0`, `i15:0`, `i16:0`, `i17:0`, `c16:0 2-OH`), na.rm = TRUE))
+
+#then sum microbial groups 
+labeled_all <- labeled_all %>% mutate(
+  Actinobacteria = sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`), na.rm = TRUE),
+  `G_neg` = sum(c(`2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`), na.rm = TRUE), 
+  Firmicutes = sum(c(`a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE), 
+  Zygomycota = sum(c(`c18:1w9c`), na.rm = TRUE),
+  `Ascomycota_Basidiomycota` = sum(c(`c18:2w6c/6t`), na.rm = TRUE), 
+  `Unspecified_Fungi` = sum(c(`c18:3w6/3w3`), na.rm = TRUE), 
+  Bacteria =  sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`, `a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE),
+  Fungi = sum(c(`c18:1w9c`, `c18:2w6c/6t`, `c18:3w6/3w3`), na.rm = TRUE)
+  )
+
+#join with metadata
+labeled_abundances <- left_join(labeled_all, meta_labeled) 
+```
+
+
+## PLFA ug 13C excess/g soil
+### Calculate total PLFAs, biomass proxy PLFAs, and microbial group PLFAs
+Note: we followed the protocol of Bailey et al. 2002, summing only the saturated PLFAs less than 20 C in length, the monounsaturated PLFAs less than 18 C, and the polyunsaturated PLFAs less than 20 C. In this paper, they found a linear relationship (r2 = 0.77) between these summed PLFAs and C from a chloroform fumigation extraction flush. 
+```{r}
+#first get total PLFA after removing fatty acid standard 19:0
+excess_all <- excess_all %>% select(-`c19:0`) %>% rowwise() %>% mutate(Total = sum(c_across(where(is.numeric)), na.rm = TRUE))
+
+#then get sum of biomass proxy PLFAs (see above for qualifying PLFAs)
+excess_all <- excess_all %>% mutate(biomass_PLFAs = sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `12Me16:0`, `2-OH 12:0`, `2-OH 16:1`, `a15:0`, `a17:0`, `br15:1`, `br16:1`, `c12:0`, `c14:0`, `c15:0`, `c15:1`, `c16:0`, `c16:1w7t`, `c16:1w9c/7c`, `c17:0`, `c17:1w6c`, `c18:0`, `c18:1w7t/5c`, `c18:1w9c`, `c18:1w9t/7c`, `c18:2w6c/6t`, `c18:3w6/3w3`, `c20:0`, `c20:2w6`, `c20:3w3`, `c20:3w6`, `c20:4w6`, `c20:5w3`, `cy17:0`, `cy19:0`, `i15:0`, `i16:0`, `i17:0`, `c16:0 2-OH`), na.rm = TRUE))
+
+#then sum microbial groups 
+excess_all <- excess_all %>% mutate(
+  Actinobacteria = sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`), na.rm = TRUE),
+  `G_neg` = sum(c(`2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`), na.rm = TRUE), 
+  Firmicutes = sum(c(`a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE), 
+  Zygomycota = sum(c(`c18:1w9c`), na.rm = TRUE),
+  `Ascomycota_Basidiomycota` = sum(c(`c18:2w6c/6t`), na.rm = TRUE), 
+  `Unspecified_Fungi` = sum(c(`c18:3w6/3w3`), na.rm = TRUE), 
+  Bacteria =  sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`, `a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE),
+  Fungi = sum(c(`c18:1w9c`, `c18:2w6c/6t`, `c18:3w6/3w3`), na.rm = TRUE)
+  )
+
+#join with metadata
+labeled_excess <- left_join(excess_all, meta_labeled) 
+```
+
+### For microbial groups, calculate the fraction each group constitutes of total biomass proxy 13C excess
+```{r}
+labeled_fraction <- labeled_excess %>% select(c(catalog_number, site, crop, timepoint, site_crop, id, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, biomass_PLFAs)) %>% mutate(across(where(is.numeric), ~./biomass_PLFAs)) %>% select(-biomass_PLFAs)
+
+labeled_fraction_bf <- labeled_excess %>% select(c(catalog_number, site, crop, timepoint, site_crop, id, Bacteria, Fungi, biomass_PLFAs)) %>% mutate(across(where(is.numeric), ~./biomass_PLFAs)) %>% select(-biomass_PLFAs)
+```
+
+
+## PLFA ug 13C/g soil
+### Calculate total PLFAs, biomass proxy PLFAs, and microbial group PLFAs
+Note: we followed the protocol of Bailey et al. 2002, summing only the saturated PLFAs less than 20 C in length, the monounsaturated PLFAs less than 18 C, and the polyunsaturated PLFAs less than 20 C. In this paper, they found a linear relationship (r2 = 0.77) between these summed PLFAs and C from a chloroform fumigation extraction flush. 
+```{r}
+#first get total PLFA after removing fatty acid standard 19:0
+abundance_13C_all <- abundance_13C_all %>% select(-`c19:0`) %>% rowwise() %>% mutate(Total = sum(c_across(where(is.numeric)), na.rm = TRUE))
+
+#then get sum of biomass proxy PLFAs (see above for qualifying PLFAs)
+abundance_13C_all <- abundance_13C_all %>% mutate(biomass_PLFAs = sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `12Me16:0`, `2-OH 12:0`, `2-OH 16:1`, `a15:0`, `a17:0`, `br15:1`, `br16:1`, `c12:0`, `c14:0`, `c15:0`, `c15:1`, `c16:0`, `c16:1w7t`, `c16:1w9c/7c`, `c17:0`, `c17:1w6c`, `c18:0`, `c18:1w7t/5c`, `c18:1w9c`, `c18:1w9t/7c`, `c18:2w6c/6t`, `c18:3w6/3w3`, `c20:0`, `c20:2w6`, `c20:3w3`, `c20:3w6`, `c20:4w6`, `c20:5w3`, `cy17:0`, `cy19:0`, `i15:0`, `i16:0`, `i17:0`, `c16:0 2-OH`), na.rm = TRUE))
+
+#then sum microbial groups 
+abundance_13C_all <- abundance_13C_all %>% mutate(
+  Actinobacteria = sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`), na.rm = TRUE),
+  `G_neg` = sum(c(`2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`), na.rm = TRUE), 
+  Firmicutes = sum(c(`a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE), 
+  Zygomycota = sum(c(`c18:1w9c`), na.rm = TRUE),
+  `Ascomycota_Basidiomycota` = sum(c(`c18:2w6c/6t`), na.rm = TRUE), 
+  `Unspecified_Fungi` = sum(c(`c18:3w6/3w3`), na.rm = TRUE), 
+    Bacteria =  sum(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`, `a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE),
+  Fungi = sum(c(`c18:1w9c`, `c18:2w6c/6t`, `c18:3w6/3w3`), na.rm = TRUE)
+  )
+
+#join with metadata
+labeled_13Cabund <- left_join(abundance_13C_all, meta_labeled) 
+```
+
+
+## PLFA wt% 13C excess 
+### Calculate mean wt% 13C for total PLFAs, biomass proxy PLFAs, and microbial group PLFAs
+Note: we followed the protocol of Bailey et al. 2002, using only the saturated PLFAs less than 20 C in length, the monounsaturated PLFAs less than 18 C, and the polyunsaturated PLFAs less than 20 C. In this paper, they found a linear relationship (r2 = 0.77) between these summed PLFAs and C from a chloroform fumigation extraction flush. 
+```{r}
+#first get total PLFA after removing fatty acid standard 19:0
+excess_perc_all <- excess_perc_all %>% select(-`c19:0`) %>% rowwise() %>% mutate(Total = mean(c_across(where(is.numeric)), na.rm = TRUE))
+
+#then get sum of biomass proxy PLFAs (see above for qualifying PLFAs)
+excess_perc_all <- excess_perc_all %>% mutate(biomass_PLFAs = mean(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `12Me16:0`, `2-OH 12:0`, `2-OH 16:1`, `a15:0`, `br15:1`, `br16:1`, `c12:0`, `c14:0`, `c15:0`, `c15:1`, `c16:0`, `c16:1w7t`, `c16:1w9c/7c`, `c17:0`, `c17:1w6c`, `c18:0`, `c18:1w7t/5c`, `c18:1w9c`, `c18:1w9t/7c`, `c18:2w6c/6t`, `c18:3w6/3w3`, `c20:0`, `c20:2w6`, `c20:3w3`, `c20:3w6`, `c20:4w6`, `c20:5w3`, `cy17:0`, `cy19:0`, `i15:0`, `i16:0`, `i17:0`, `c16:0 2-OH`), na.rm = TRUE))
+
+#then sum microbial groups 
+excess_perc_all <- excess_perc_all %>% mutate(
+  Actinobacteria = mean(c(`10Me16:0`, `10Me17:0`, `10Me18:0`), na.rm = TRUE),
+  `G_neg` = mean(c(`2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`), na.rm = TRUE), 
+  Firmicutes = mean(c(`a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE), 
+  Zygomycota = mean(c(`c18:1w9c`), na.rm = TRUE),
+  `Ascomycota_Basidiomycota` = mean(c(`c18:2w6c/6t`), na.rm = TRUE), 
+  `Unspecified_Fungi` = mean(c(`c18:3w6/3w3`), na.rm = TRUE), 
+    Bacteria =  mean(c(`10Me16:0`, `10Me17:0`, `10Me18:0`, `2-OH 16:1`, `c16:1w9c/7c`, `c18:1w9t/7c`, `cy17:0`, `cy19:0`, `a15:0`, `i15:0`, `i16:0`, `i17:0`), na.rm = TRUE),
+  Fungi = mean(c(`c18:1w9c`, `c18:2w6c/6t`, `c18:3w6/3w3`), na.rm = TRUE)
+  )
+
+#join with metadata
+labeled_perc_excess <- left_join(excess_perc_all, meta_labeled) 
+```
+
+
+## Join PLFA and Folch data
+### Reformat Whole soil Folch data
+```{r}
+#edit column names 
+Folch_frac_WS <- Folch_frac %>% dplyr::rename("wt.perc.C" = "wt...C....", "g.DW.Soil.extracted" = "DW.Soil.extracted..g.", "Ratio.R" = "R..ratio.", "Fraction.F" = "F..fraction.", "atom.perc.13C" = "atom..13C",   "wt.perc.13C" = "wt..13C",  "Natural.abundance.atom.perc.13C" = "Natural.abundance.atom..13C", "Natural.Abundance.wt.perc.13C" = "Natural.Abundance.wt..13C", "ug.13C.total.in.whole.samples" = "ug.13C..total.in.whole.samples", "ug.12C.total.in.whole.samples" = "ug.12C..total.in.whole.samples") %>%
+ #edit fraction names
+  mutate(Fraction = case_when(
+ Fraction == "LeftoverSoilPellet" ~ "LSP",
+ Fraction == "WholeSoil" ~ "WS", 
+ TRUE ~ Fraction)
+  ) %>%
+#calculate excess 13C (wt%)
+  mutate(wt.perc.13C.excess = wt.perc.13C - Natural.Abundance.wt.perc.13C) %>%
+#add site-crop and id columns for plot coloring and pairing replicates with time, respectively
+  mutate(site_crop = paste0(Site, " ", Crop), id = paste0(Site ,"_", Crop, "_", Block)) %>% 
+  #convert categorical variable columns to factors for plotting
+  mutate(Timepoint = as.factor(Timepoint), Site = as.factor(Site), Crop = as.factor(Crop), id = as.factor(id), site_crop = as.factor(site_crop)) %>%
+  filter(Fraction == "WS") %>% 
+  select(c(Catalog.Number, Site, Crop, Block, Amendment, Timepoint, ug.Total.C.per.g.dry.soil, ug.13C.per.g.dry.soil, ug.13C.excess.per.g.dry.soil)) %>% dplyr::rename("ug.Total.C.per.g.dry.soil.WS" = "ug.Total.C.per.g.dry.soil", "ug.13C.per.g.dry.soil.WS" = "ug.13C.per.g.dry.soil", "ug.13C.excess.per.g.dry.soil.WS" = "ug.13C.excess.per.g.dry.soil")
+```
+
+### Grab columns for total PLFAs, biomass PLFAs, and marker PLFAs, add description for PLFA measurement, and join
+```{r}
+#ug C/g dry soil
+ug_C <- labeled_abundances %>% select(c(catalog_number, Total, biomass_PLFAs, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi)) %>% pivot_longer(cols = c(Total, biomass_PLFAs, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi), names_to = "Fraction", values_to = "ug.Total.C.per.g.dry.soil")
+
+#ug 13C/g dry soil
+ug_13C <- labeled_13Cabund %>% select(c(catalog_number, Total, biomass_PLFAs, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi)) %>% pivot_longer(cols = c(Total, biomass_PLFAs, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi), names_to = "Fraction", values_to = "ug.13C.per.g.dry.soil")
+
+#ug 13C excess/g dry soil
+ug_13Cexcess <- labeled_excess %>% select(c(catalog_number, Total, biomass_PLFAs, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi)) %>% pivot_longer(cols = c(Total, biomass_PLFAs, Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi), names_to = "Fraction", values_to = "ug.13C.excess.per.g.dry.soil")
+
+PLFA_df <- left_join(ug_C, ug_13C) %>% left_join(., ug_13Cexcess) %>% dplyr::rename("Catalog.Number" = "catalog_number")
+```
+
+### Merge data and calculate fractions each PLFA pool represents of whole soil 
+```{r}
+joined <- full_join(PLFA_df, Folch_frac_WS)
+
+#calculate fraction of total C, 13C, and 13C excess each PLFA pool represents 
+joined_frac <- joined %>% 
+  mutate(
+    frac.ug.Total.C.per.g.dry.soil.WS = ug.Total.C.per.g.dry.soil/ug.Total.C.per.g.dry.soil.WS,
+    frac.ug.13C.per.g.dry.soil.WS = ug.13C.per.g.dry.soil/ug.13C.per.g.dry.soil.WS,  
+    frac.ug.13C.excess.per.g.dry.soil.WS = ug.13C.excess.per.g.dry.soil/ug.13C.excess.per.g.dry.soil.WS,
+    perc.ug.Total.C.per.g.dry.soil.WS = frac.ug.Total.C.per.g.dry.soil.WS * 100,
+    perc.ug.13C.per.g.dry.soil.WS = frac.ug.13C.per.g.dry.soil.WS * 100,
+    perc.ug.13C.excess.per.g.dry.soil.WS = frac.ug.13C.excess.per.g.dry.soil.WS * 100
+  )
+```
+
+
+# Biomass
+
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(biomass_PLFAs, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "biomass_PLFAs",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = biomass_PLFAs, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(biomass_PLFAs)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(biomass_PLFAs)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(biomass_PLFAs ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more biomass in WI compared to MI and more biomass in switchgrass plots compared to corn.
+```{r}
+labeled_abundances %>% anova_test(dv = biomass_PLFAs, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+## ug 13C/g dry soil 
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(biomass_PLFAs, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "biomass_PLFAs",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = biomass_PLFAs, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(biomass_PLFAs)
+
+#Check for normal distribution; was normally distributed except for MI corn at 2 months, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(biomass_PLFAs)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(biomass_PLFAs ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There were no significant interaction effects; site, crop, and timepoint were significant main effects 
+```{r}
+labeled_13Cabund %>% anova_test(dv = biomass_PLFAs, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C excess/g dry soil 
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(biomass_PLFAs, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "biomass_PLFAs",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = biomass_PLFAs, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(biomass_PLFAs)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(biomass_PLFAs)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(biomass_PLFAs ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There is a signficiant interaction effect between site and crop 
+```{r}
+labeled_excess %>% anova_test(dv = biomass_PLFAs, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Test 
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#simple main effect of site for each crop; site was significant only for corn
+labeled_excess %>%
+  group_by(crop) %>%
+  anova_test(dv = biomass_PLFAs, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#simple main effect of crop for each site; crop was significant only for Michigan 
+labeled_excess %>%
+  group_by(site) %>%
+  anova_test(dv = biomass_PLFAs, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(biomass_PLFAs, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "biomass_PLFAs",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = biomass_PLFAs, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216, EC5200, and EC5158 are outliers
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(biomass_PLFAs)
+
+#Check for normal distriubtion as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outliers, MI CRN at 2 mo and WI CRN at 1 yr are not normally distributed 
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(biomass_PLFAs)
+#!!!!without outliers, WI CRN at 1 yr is not normally distributed 
+labeled_perc_excess %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(biomass_PLFAs)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outliers
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(biomass_PLFAs ~ site*crop)
+#without outliers
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(biomass_PLFAs ~ site*crop)
+```
+
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_perc_excess %>%  filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(biomass_PLFAs, type = "mean_sd")
+
+#boxplot 
+ggboxplot(labeled_perc_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158"), "site_crop", "biomass_PLFAs",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158"), aes(x = factor(site_crop), y = biomass_PLFAs, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is a signficiant interaction effect between site and timepoint with and without outliers
+```{r}
+#with outliers
+labeled_perc_excess %>% anova_test(dv = biomass_PLFAs, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_perc_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158") %>% anova_test(dv = biomass_PLFAs, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Test 
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#with outliers
+#simple main effect of timepoint for each site; timepoint was significant for both sites, but stronger effect in Michigan
+labeled_perc_excess %>%
+  group_by(site) %>%
+  anova_test(dv = biomass_PLFAs, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#with outliers 
+#simple main effect of site for each timepoint; site was significant for both timepoints, but there was a stronger effect at 2 months
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = biomass_PLFAs, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outliers
+#simple main effect of timepoint for each site; timepoint was significant for both sites, but stronger effect in Michigan
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158") %>%
+  group_by(site) %>%
+  anova_test(dv = biomass_PLFAs, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#without outliers 
+#simple main effect of site for each timepoint; site was significant for both timepoints, but there was a stronger effect at 2 months
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5200" & catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  anova_test(dv = biomass_PLFAs, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+
+
+# Budget
+
+
+## ug C/g dry soil
+### 2 months
+```{r}
+abundances_2mo <- labeled_abundances %>% filter(timepoint == "2month") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "ug_C_g_dry_soil", names_repair = "unique")
+```
+
+### Summary
+```{r}
+abundances_2mo %>% group_by(group) %>% get_summary_stats(ug_C_g_dry_soil, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- abundances_2mo %>% t_test(ug_C_g_dry_soil ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(abundances_2mo, x = "group", y = "ug_C_g_dry_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("ug C/g dry soil")
+```
+
+
+### 1 year
+```{r}
+abundances_1yr <- labeled_abundances %>% filter(timepoint == "1year") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "ug_C_g_dry_soil", names_repair = "unique")
+```
+
+### Summary
+```{r}
+abundances_1yr %>% group_by(group) %>% get_summary_stats(ug_C_g_dry_soil, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- abundances_1yr %>% t_test(ug_C_g_dry_soil ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(abundances_1yr, x = "group", y = "ug_C_g_dry_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("ug C/g dry soil")
+```
+
+
+
+## ug 13C/g dry soil
+### 2 months
+```{r}
+abund13C_2mo <- labeled_13Cabund %>% filter(timepoint == "2month") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "ug_13C_g_dry_soil", names_repair = "unique")
+```
+
+### Summary
+```{r}
+abund13C_2mo %>% group_by(group) %>% get_summary_stats(ug_13C_g_dry_soil, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- abund13C_2mo %>% t_test(ug_13C_g_dry_soil ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(abund13C_2mo, x = "group", y = "ug_13C_g_dry_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("ug 13C/g dry soil")
+```
+
+
+### 1 year
+```{r}
+abund13C_1yr <- labeled_13Cabund %>% filter(timepoint == "1year") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "ug_13C_g_dry_soil", names_repair = "unique")
+```
+
+### Summary
+```{r}
+abund13C_1yr %>% group_by(group) %>% get_summary_stats(ug_13C_g_dry_soil, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- abund13C_1yr %>% t_test(ug_13C_g_dry_soil ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(abund13C_1yr, x = "group", y = "ug_13C_g_dry_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("ug 13C/g dry soil")
+```
+
+
+
+## ug 13C excess/g dry soil
+### 2 months
+```{r}
+excess_2mo <- labeled_excess %>% filter(timepoint == "2month") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "ug_13C_excess_g_dry_soil", names_repair = "unique")
+```
+
+### Summary
+```{r}
+excess_2mo %>% group_by(group) %>% get_summary_stats(ug_13C_excess_g_dry_soil, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- excess_2mo %>% t_test(ug_13C_excess_g_dry_soil ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(excess_2mo, x = "group", y = "ug_13C_excess_g_dry_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("ug 13C excess/g dry soil")
+```
+
+
+### 1 year
+```{r}
+excess_1yr <- labeled_excess %>% filter(timepoint == "1year") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "ug_13C_excess_g_dry_soil", names_repair = "unique")
+```
+
+### Summary
+```{r}
+excess_1yr %>% group_by(group) %>% get_summary_stats(ug_13C_excess_g_dry_soil, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- excess_1yr %>% t_test(ug_13C_excess_g_dry_soil ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(excess_1yr, x = "group", y = "ug_13C_excess_g_dry_soil")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("ug 13C excess/g dry soil")
+```
+
+
+
+## mean wt% 13C excess
+### 2 months
+```{r}
+percexcess_2mo <- labeled_perc_excess %>% filter(timepoint == "2month") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "mean_wt_perc_13C", names_repair = "unique")
+```
+
+### Summary
+```{r}
+percexcess_2mo %>% group_by(group) %>% get_summary_stats(mean_wt_perc_13C, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- percexcess_2mo %>% t_test(mean_wt_perc_13C ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(percexcess_2mo, x = "group", y = "mean_wt_perc_13C")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("mean wt% 13C")
+```
+
+
+### 1 year
+```{r}
+percexcess_1yr <- labeled_perc_excess %>% filter(timepoint == "1year") %>% select(c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs, timepoint, site, crop, site_crop)) %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi, Bacteria, Fungi, Total, biomass_PLFAs), names_to = "group", values_to = "mean_wt_perc_13C", names_repair = "unique")
+```
+
+### Summary
+```{r}
+percexcess_1yr %>% group_by(group) %>% get_summary_stats(mean_wt_perc_13C, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- percexcess_1yr %>% t_test(mean_wt_perc_13C ~ group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(percexcess_1yr, x = "group", y = "mean_wt_perc_13C")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("PLFA type") +
+  ylab("mean wt.% 13C")
+```
+
+
+
+
+
+# Fraction of Biomass 13C excess 
+
+## 2 months- bacteria vs fungi
+```{r}
+fraction_2mo <- labeled_fraction_bf %>% filter(timepoint == "2month") %>% pivot_longer(cols = c(Bacteria, Fungi), names_to = "microbial_group", values_to = "fraction_biomass_13C")
+```
+
+### Summary
+```{r}
+fraction_2mo %>% group_by(microbial_group) %>% get_summary_stats(fraction_biomass_13C, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- fraction_2mo %>% t_test(fraction_biomass_13C ~ microbial_group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(fraction_2mo, x = "microbial_group", y = "fraction_biomass_13C")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p"
+    ) + rotate_x_text(angle = 90) +
+  xlab("Microbial Group") +
+  ylab("Fraction of biomass 13C excess")
+```
+
+
+## 1 year - bacteria vs fungi
+```{r}
+fraction_1yr <- labeled_fraction_bf %>% filter(timepoint == "1year") %>% pivot_longer(cols = c(Bacteria, Fungi), names_to = "microbial_group", values_to = "fraction_biomass_13C")
+```
+
+### Summary
+```{r}
+fraction_1yr %>% group_by(microbial_group) %>% get_summary_stats(fraction_biomass_13C, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- fraction_1yr %>% t_test(fraction_biomass_13C ~ microbial_group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(fraction_1yr, x = "microbial_group", y = "fraction_biomass_13C")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p"
+    ) + rotate_x_text(angle = 90) +
+  xlab("Microbial Group") +
+  ylab("Fraction of biomass 13C excess")
+```
+
+
+## 2 months- microbial groups
+```{r}
+fraction_2mo <- labeled_fraction %>% filter(timepoint == "2month") %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi), names_to = "microbial_group", values_to = "fraction_biomass_13C")
+```
+
+### Summary
+```{r}
+fraction_2mo %>% group_by(microbial_group) %>% get_summary_stats(fraction_biomass_13C, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- fraction_2mo %>% t_test(fraction_biomass_13C ~ microbial_group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(fraction_2mo, x = "microbial_group", y = "fraction_biomass_13C")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("Microbial Group") +
+  ylab("Fraction of biomass 13C excess")
+```
+
+
+## 1 year - microbial groups
+```{r}
+fraction_1yr <- labeled_fraction %>% filter(timepoint == "1year") %>% pivot_longer(cols = c(Actinobacteria, G_neg, Firmicutes, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi), names_to = "microbial_group", values_to = "fraction_biomass_13C")
+```
+
+### Summary
+```{r}
+fraction_1yr %>% group_by(microbial_group) %>% get_summary_stats(fraction_biomass_13C, type = "mean_sd")
+```
+
+### T-test
+```{r}
+pairwise.test <- fraction_1yr %>% t_test(fraction_biomass_13C ~ microbial_group, paired = TRUE)
+pairwise.test
+```
+
+### Boxplot
+```{r}
+#add y-position for p-values for plot
+pairwise.test <- pairwise.test %>%
+  add_y_position()
+
+#plot
+ggboxplot(fraction_1yr, x = "microbial_group", y = "fraction_biomass_13C")+
+  stat_pvalue_manual(
+    pairwise.test, label = "p.adj"
+    ) + rotate_x_text(angle = 90) +
+  xlab("Microbial Group") +
+  ylab("Fraction of biomass 13C excess")
+```
+
+
+
+# Bacteria 
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Bacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Bacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. 
+```{r}
+labeled_abundances %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Bacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5158 is an outlier
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Bacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) with and without the outlier.
+#with outlier
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+#without outlier
+labeled_13Cabund %>% 
+  filter(catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) with and without the outlier
+#with outlier
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+#without outlier
+labeled_13Cabund %>%
+  filter(catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+```
+
+### Summary and boxplot without outlier
+```{r}
+#summary
+labeled_13Cabund %>% filter(catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_13Cabund %>% filter(catalog_number != "EC5158"), "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund %>% filter(catalog_number != "EC5158"), aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Bacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. 
+```{r}
+#with outlier 
+labeled_13Cabund %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier 
+labeled_13Cabund %>% filter(catalog_number != "EC5158") %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Bacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5158 is an outlier
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Bacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) after removal of the outlier.
+#with outlier
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+#without outlier
+labeled_excess %>% 
+  filter(catalog_number != "EC5158") %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+#without outlier
+labeled_excess %>%
+  filter(catalog_number != "EC5158") %>% 
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+```
+
+### Summary and boxplot without outlier
+```{r}
+#summary
+labeled_excess %>%filter(catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_excess %>% filter(catalog_number != "EC5158"), "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess %>% filter(catalog_number != "EC5158"), aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Bacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. 
+```{r}
+#with outlier
+labeled_excess %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier
+labeled_excess %>%  filter(catalog_number != "EC5158") %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Bacteria-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers 
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Bacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) 
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+Two way interactions of site and timepoint and crop and timepoint
+```{r}
+labeled_perc_excess %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#site and timepoint
+#simple main effect of site for each timepoint; site was significant only at 2 months
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Bacteria, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#simple main effect of timepoint for each site; timepoint was significant for both sites with a stronger effect in Michigan 
+labeled_perc_excess %>%
+  group_by(site) %>%
+  anova_test(dv = Bacteria, wid = id, within = timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#crop and timepoint
+#simple main effect of site for each timepoint; crop was significant only at 2 months
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Bacteria, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#simple main effect of timepoint for each crop; timepoint was significant for both crops with a stronger effect in corn plots 
+labeled_perc_excess %>%
+  group_by(crop) %>%
+  anova_test(dv = Bacteria, wid = id, within = timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction_bf %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction_bf, "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction_bf, aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Bacteria-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5187, EC5155, and EC5120 are outliers
+labeled_fraction_bf %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Bacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) after removal of outliers.
+#with outliers
+labeled_fraction_bf %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+#without outliers
+labeled_fraction_bf %>% 
+  filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Bacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outliers
+labeled_fraction_bf %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+#without outliers
+labeled_fraction_bf %>%
+  filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120") %>%
+  group_by(timepoint) %>%
+  levene_test(Bacteria ~ site*crop)
+```
+
+### Summary and boxplot without outliers
+```{r}
+#summary
+labeled_fraction_bf %>% filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Bacteria, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_fraction_bf %>% filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120"), "site_crop", "Bacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction_bf %>% filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120"), aes(x = factor(site_crop), y = Bacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Bacteria-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+Two way interaction of crop and timepoint after removal of outliers
+```{r}
+#with outliers
+labeled_fraction_bf %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_fraction_bf %>%  filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120") %>% anova_test(dv = Bacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+
+#crop and timepoint
+#simple main effect of crop for each timepoint; crop was not significant for either timepoint
+labeled_perc_excess %>%
+   filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120") %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Bacteria, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+#simple main effect of timepoint for each crop; timepoint was significant for both crops with a stronger effect in switchgrass plots 
+labeled_perc_excess %>%
+   filter(catalog_number != "EC5187" & catalog_number != "EC5155" & catalog_number != "EC5120") %>%
+  group_by(crop) %>%
+  anova_test(dv = Bacteria, wid = id, within = timepoint) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+# Fungi
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Fungi-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5065 and EC5126 are outlieres
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Fungi)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+#without outliers
+labeled_abundances %>% 
+  filter(catalog_number != "EC5065" & catalog_number != "EC5126") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+
+#!!!Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) only if outliers are included 
+#with outliers
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+#without outliers
+labeled_abundances %>%
+  filter(catalog_number != "EC5065" & catalog_number != "EC5126") %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+```
+
+### Summary and boxplot without outliers
+```{r}
+#summary
+labeled_abundances %>% filter(catalog_number != "EC5065" & catalog_number != "EC5126") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_abundances %>% filter(catalog_number != "EC5065" & catalog_number != "EC5126") , "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances %>% filter(catalog_number != "EC5065" & catalog_number != "EC5126"), aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Fungi-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. 
+```{r}
+#with outliers
+labeled_abundances %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_abundances %>% filter(catalog_number != "EC5065" & catalog_number != "EC5126") %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Fungi-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Fungi)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) 
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) 
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+```
+
+
+### Three-Way Mixed Model ANOVA
+Two-way interaction between site and crop was significant. 
+```{r}
+labeled_13Cabund %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#site and crop
+#simple main effect of crop for each site; crop was significant only for Michigan
+labeled_13Cabund %>%
+  group_by(site) %>%
+  anova_test(dv = Fungi, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#simple main effect of site for each crop; site was significant onbly for corn
+labeled_13Cabund %>%
+  group_by(crop) %>%
+  anova_test(dv = Fungi, between = site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Fungi-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Fungi)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05)
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) 
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+Two-way interaction between site and crop 
+```{r}
+labeled_excess %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#site and crop
+#simple main effect of crop for each site; crop was significant only for Michigan
+labeled_excess %>%
+  group_by(site) %>%
+  anova_test(dv = Fungi, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#simple main effect of site for each crop; site was significant only for corn
+labeled_excess %>%
+  group_by(crop) %>%
+  anova_test(dv = Fungi, between = site) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Fungi-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5158 is an outlier
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Fungi)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+#without outlier
+labeled_perc_excess %>% 
+  filter(catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) 
+#with outlier
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+#without outlier
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+```
+
+### Summary and boxplot without outlier
+```{r}
+#summary
+labeled_perc_excess %>% filter(catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_perc_excess %>% filter(catalog_number != "EC5158"), "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess %>% filter(catalog_number != "EC5158"), aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Fungi-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects after removal of outlier.
+```{r}
+#with outlier
+labeled_perc_excess %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier
+labeled_perc_excess %>% filter(catalog_number != "EC5158") %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction_bf %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction_bf, "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction_bf, aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Fungi-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5155 is an outliers
+labeled_fraction_bf %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Fungi)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) 
+#with outlier
+labeled_fraction_bf %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+#without outlier
+labeled_fraction_bf %>% 
+  filter(catalog_number != "EC5155") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Fungi)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+labeled_fraction_bf %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+#without outlier
+labeled_fraction_bf %>%
+  filter(catalog_number != "EC5155") %>%
+  group_by(timepoint) %>%
+  levene_test(Fungi ~ site*crop)
+```
+
+### Summary and boxplot without outliers
+```{r}
+#summary
+labeled_fraction_bf %>% filter(catalog_number != "EC5155") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_fraction_bf %>% filter(catalog_number != "EC5155"), "site_crop", "Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction_bf %>% filter(catalog_number != "EC5155"), aes(x = factor(site_crop), y = Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Fungi-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+```{r}
+#with outliers
+labeled_fraction_bf %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_fraction_bf %>%  filter(catalog_number != "EC5155") %>% anova_test(dv = Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+
+
+# Actinobacteria
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Actinobacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Actinobacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Actinobacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Actinobacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Actinobacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Actinobacteria)
+
+#!!!!Check for homogeneity of variance; 2 month was not homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Actinobacteria ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more C in Actinobacteria in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+labeled_abundances %>% anova_test(dv = Actinobacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Actinobacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Actinobacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Actinobacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Actinobacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Actinobacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Actinobacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05)
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Actinobacteria ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more 13C in Actinobacteria in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+labeled_13Cabund %>% anova_test(dv = Actinobacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Actinobacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Actinobacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Actinobacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Actinobacteria-specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Actinobacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Actinobacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05)
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Actinobacteria ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more 13C in Actinobacteria in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+labeled_excess %>% anova_test(dv = Actinobacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Actinobacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Actinobacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Actinobacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Actinobacteria-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5291 is an outlier 
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Actinobacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point both with and without the outlier, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Actinobacteria)
+#without outlier
+labeled_perc_excess %>% 
+  filter(catalog_number != "EC5291") %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Actinobacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) both with and without the outlier
+#with outlier
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Actinobacteria ~ site*crop)
+#without outlier
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5291") %>% 
+  group_by(timepoint) %>%
+  levene_test(Actinobacteria ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_perc_excess %>% filter(catalog_number != "EC5291") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Actinobacteria, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_perc_excess %>% filter(catalog_number != "EC5291"), "site_crop", "Actinobacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess %>% filter(catalog_number != "EC5291"), aes(x = factor(site_crop), y = Actinobacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Actinobacteria-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Site, crop, and timepoint are significant main effects with higher mean wt% 13C in Actinobacteria in MI compared to WI, higher in corn plots compared to switchgrass, and higher at 2 months than 1 year. Same trends both with and without the outlier.
+```{r}
+#with outlier 
+labeled_perc_excess %>% anova_test(dv = Actinobacteria, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier 
+labeled_perc_excess %>% filter(catalog_number != "EC5291") %>%anova_test(dv = Actinobacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction %>% group_by(site, crop, timepoint) %>% get_summary_stats(Actinobacteria, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction, "site_crop", "Actinobacteria",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction, aes(x = factor(site_crop), y = Actinobacteria, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Actinobacteria-specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers 
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Actinobacteria)
+
+#Check for normal distriubtion; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Actinobacteria)
+
+#Check for homogeneity of variance; homogeneous as assessed by Levene test (p > 0.05) 
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  levene_test(Actinobacteria ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Crop and timepoint are significant main effects with a greater fraction of biomass 13C excess in Actinobacterial PLFAs in corn plots compared to switchgrass, and a greater fraction at 1 year compared to 2 months.
+```{r}
+labeled_fraction %>% anova_test(dv = Actinobacteria, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+
+# Gram - bacteria
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Gram - bacteria specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(`G_neg`)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more C in Gram - bacteria in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+labeled_abundances %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund , "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund , aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Gram - bacteria specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216 and EC5158 are outliers 
+labeled_13Cabund  %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(`G_neg`)
+
+#Check for normal distribution; was normally distributed at each time point after removal of outlier, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+labeled_13Cabund  %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+#without outlier
+labeled_13Cabund  %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without the outlier
+#with outlier
+labeled_13Cabund  %>%
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+#without outlier
+labeled_13Cabund  %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% 
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_13Cabund  %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_13Cabund %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158"), "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund  %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158"), aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Gram - bacteria specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Site, crop, and timepoint are significant main effects with greater 13C excess/g dry soil in Gram - bacteria in WI compared to MI, greater in switchgrass plots compared to corn, and greater at 2 months compared to a year. Removing outlier had no effect on trends.
+```{r}
+#with outlier
+labeled_13Cabund  %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+#with outlier
+labeled_13Cabund  %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C excess 
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Gram - bacteria specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5158 is an outlier 
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(`G_neg`)
+
+#Check for normal distribution; was normally distributed at each time point after removal of outlier, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outlier
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+#without outlier
+labeled_excess %>% 
+  filter(catalog_number != "EC5158") %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without the outlier
+#with outlier
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+#without outlier
+labeled_excess %>%
+  filter(catalog_number != "EC5158") %>% 
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_excess %>% filter(catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_excess %>% filter(catalog_number != "EC5158"), "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess %>% filter(catalog_number != "EC5158"), aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Gram - bacteria specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Site, crop, and timepoint are significant main effects with greater 13C excess/g dry soil in Gram - bacteria in WI compared to MI, greater in switchgrass plots compared to corn, and greater at 2 months compared to a year. Removing outlier had no effect on trends.
+```{r}
+#with outlier
+labeled_excess %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+#with outlier
+labeled_excess %>% filter(catalog_number != "EC5158") %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## mean wt% 13C excess 
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Gram - bacteria specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers 
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(`G_neg`)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There was a signficant interaction effect between site and timepoint.
+```{r}
+labeled_perc_excess %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction between site and timepoint, performing simple main effect tests; for these statistical significance was accepted at the p < 0.025 level 
+
+#Compute simple main effect of site for each timepoint; found site is statistically significant for only the 2 month timepoint
+labeled_perc_excess %>% 
+  group_by(timepoint) %>%
+  anova_test(dv = G_neg, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#Compute simple main effect of timepoint for each site; found timepoint is statistically significant for both sites, with a greater effect of timepoint at the Michigan site
+labeled_perc_excess %>% 
+  group_by(site) %>%
+  anova_test(dv = G_neg, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction, "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction, aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in  Gram - bacteria specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5193 and EC5264 are outliers 
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(`G_neg`)
+
+#Check for normal distribution; was normally distributed at each time point both with and without outliers, as assessed by Shapiro-Wilk’s test (p > 0.05).
+#with outliers
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+#without outliers
+labeled_fraction %>% 
+  filter(catalog_number != "EC5193" & catalog_number != "EC5264") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(G_neg)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outliers
+#with outliers
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+#without outliers
+labeled_fraction %>%
+  filter(catalog_number != "EC5193" & catalog_number != "EC5264") %>%
+  group_by(timepoint) %>%
+  levene_test(`G_neg` ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_fraction %>% filter(catalog_number != "EC5193" & catalog_number != "EC5264") %>% group_by(site, crop, timepoint) %>% get_summary_stats(`G_neg`, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_fraction %>% filter(catalog_number != "EC5193" & catalog_number != "EC5264"), "site_crop", "`G_neg`",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction %>% filter(catalog_number != "EC5193" & catalog_number != "EC5264"), aes(x = factor(site_crop), y = `G_neg`, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in  Gram - bacteria specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Crop and timepoint are significant main effects with a greater fraction of biomass 13C excess in Gram - bacteria in switchgrass plots compared to corn, and greater fraction at 2 months compared to a year. Removing outlier had no effect on trends.
+```{r}
+#with outliers
+labeled_fraction %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+#without outliers
+labeled_fraction %>% filter(catalog_number != "EC5193" & catalog_number != "EC5264") %>% anova_test(dv = G_neg, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+
+# Firmicutes
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Firmicutes specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Firmicutes)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more C in Firmicutes in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+labeled_abundances %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Firmicutes specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216 and EC5158
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Firmicutes)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05), but only after removal of outliers
+#with outliers
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+#without outliers
+labeled_excess %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+#without outliers
+labeled_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_excess, "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Firmicutes specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more 13C excess per g soil in Firmicutes in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+#with outliers
+labeled_excess %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+#without outliers
+labeled_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C /g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Firmicutes specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5158 is an outlier
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Firmicutes)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05), but only after removal of outliers
+#with outliers
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+#without outliers
+labeled_13Cabund%>% 
+  filter(catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+#without outliers
+labeled_13Cabund %>%
+  filter(catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_13Cabund %>% filter(catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_13Cabund %>% filter(catalog_number != "EC5158"), "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund %>% filter(catalog_number != "EC5158"), aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Firmicutes specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more 13C excess per g soil in Firmicutes in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+#with outliers
+labeled_13Cabund %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+#without outliers
+labeled_13Cabund %>% filter(catalog_number != "EC5158") %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Firmicutes specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5155 and EC5158 are outliers
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Firmicutes)
+
+#!!!!Check for normal distribution; was not normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05); MI SWG at 1 year is not normally distributed 
+#with outliers
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+#without outliers
+labeled_perc_excess %>% 
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+#without outliers
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_perc_excess %>% filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_perc_excess %>% filter(catalog_number != "EC5155" & catalog_number != "EC5158"), "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess %>% filter(catalog_number != "EC5155" & catalog_number != "EC5158"), aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Firmicutes specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There were significant interaction effects; without outliers, there is a significant two-way interaction between site and timepoint as well as crop and timepoint and with outliers, there is a significant three-way interaction between site, crop, and timepoint.
+```{r}
+#with outliers
+labeled_perc_excess %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+#without outliers
+labeled_perc_excess %>% filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#with outliers
+#Because there was a significant three-way interaction, performing simple two-way interactions and simple simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+#crop and timepoint
+#performing a simple two-way interaction between site and crop for each timepoint; the two way interaction was significant for only the 2 month timepoint
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Firmicutes, wid = id, between = c(site, crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#for the 2 month timepoint, compute simple simple main effect of site for each crop; site is significant for both corn and switchgrass, but the effect is stronger for corn
+labeled_perc_excess %>%
+  filter(timepoint == "2month") %>%
+  group_by(crop) %>%
+  anova_test(dv = Firmicutes, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#for the 2 month timepoint, compute simple simple main effect of crop for each site; crop is significant only for Michigan
+labeled_perc_excess %>%
+  filter(timepoint == "2month") %>%
+  group_by(site) %>%
+  anova_test(dv = Firmicutes, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#without outliers
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+#compute simple main effect of crop for each timepoint; crop is not significant for either timepoint
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% 
+  group_by(timepoint) %>%
+  anova_test(dv = Firmicutes, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each crop; timepoint is significant for both corn and switchgrass
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% 
+  group_by(crop) %>%
+  anova_test(dv = Firmicutes, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of site for each timepoint; site is significant only at 2 months
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% 
+  group_by(timepoint) %>%
+  anova_test(dv = Firmicutes, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each site; timepoint is significant for both Michigan and Wisconsin, but has a stronger effect for Michigan
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% 
+  group_by(site) %>%
+  anova_test(dv = Firmicutes, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction %>% group_by(site, crop, timepoint) %>% get_summary_stats(Firmicutes, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction, "site_crop", "Firmicutes",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction, aes(x = factor(site_crop), y = Firmicutes, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Firmicutes specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Firmicutes)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05)
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Firmicutes)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  levene_test(Firmicutes ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There were significant interaction effects; there is a significant two-way interaction between crop and timepoint.
+```{r}
+#with outliers
+labeled_fraction %>% anova_test(dv = Firmicutes, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#compute simple main effect of crop for each timepoint; crop is not significant for either timepoint
+labeled_fraction %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% 
+  group_by(timepoint) %>%
+  anova_test(dv = Firmicutes, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#compute simple main effect of timepoint for each crop; timepoint is significant for corn only
+labeled_fraction %>%
+  filter(catalog_number != "EC5155" & catalog_number != "EC5158") %>% 
+  group_by(crop) %>%
+  anova_test(dv = Firmicutes, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+
+# Zygomycota
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Zygomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Zygomycota)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with more C in Actinobacteria in WI compared to MI and more in switchgrass plots compared to corn.
+```{r}
+labeled_abundances %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Zygomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5287 is an outlier
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Zygomycota)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) only after removing outlier
+#with outlier
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+#without outlier
+labeled_13Cabund %>% 
+  filter(catalog_number != "EC5287") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+#without outlier
+labeled_13Cabund %>%
+  filter(catalog_number != "EC5287") %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_13Cabund %>% filter(catalog_number != "EC5287") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_13Cabund %>% filter(catalog_number != "EC5287"), "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund %>% filter(catalog_number != "EC5287"), aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Zygomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There was a significant two-way interaction between site and crop. 
+```{r}
+#with outlier
+labeled_13Cabund %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+#without outlier
+labeled_13Cabund %>% filter(catalog_number != "EC5287") %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#with outlier
+#compute simple main effect of crop for each site; crop was significant only for Michigan
+labeled_13Cabund %>%
+  group_by(site) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of site for each crop; site is significant for corn only
+labeled_13Cabund %>%
+  group_by(crop) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#without outlier
+#compute simple main effect of crop for each site; crop was significant only for Michigan
+labeled_13Cabund %>%
+  filter(catalog_number != "EC5287") %>%
+  group_by(site) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of site for each crop; site is significant for corn only
+labeled_13Cabund %>%
+  filter(catalog_number != "EC5287") %>%
+  group_by(crop) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Zygomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5287 is an outlier
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Zygomycota)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) only after removing outlier
+#with outlier
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+#without outlier
+labeled_excess %>% 
+  filter(catalog_number != "EC5287") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+#without outlier
+labeled_excess %>%
+  filter(catalog_number != "EC5287") %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_excess %>% filter(catalog_number != "EC5287") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_excess %>% filter(catalog_number != "EC5287"), "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess %>% filter(catalog_number != "EC5287"), aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Zygomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There was a significant two-way interaction between site and crop. 
+```{r}
+#with outlier
+labeled_excess %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+#without outlier
+labeled_excess %>% filter(catalog_number != "EC5287") %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#with outlier
+#compute simple main effect of crop for each site; crop was significant only for Michigan
+labeled_excess %>%
+  group_by(site) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of site for each crop; site is significant for corn only
+labeled_excess %>%
+  group_by(crop) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#without outlier
+#compute simple main effect of crop for each site; crop was significant only for Michigan
+labeled_excess %>%
+  filter(catalog_number != "EC5287") %>%
+  group_by(site) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of site for each crop; site is significant for corn only
+labeled_excess %>%
+  filter(catalog_number != "EC5287") %>%
+  group_by(crop) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Zygomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no exteme outliers
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Zygomycota)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) 
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) 
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There was a significant two-way interaction between site and timepoint as well as between crop and timepoint. 
+```{r}
+labeled_perc_excess %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#compute simple main effect of crop for each timepoint; crop was significant only for the 2 month timepoint
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each crop; timepoint is only significant for corn
+labeled_perc_excess %>%
+  group_by(crop) %>%
+  anova_test(dv = Zygomycota, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#compute simple main effect of site for each timepoint; site was significant for both timepoints, but the effect was stronger at the 2 month timepoint
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Zygomycota, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each site; timepoint is significant for Michigan only
+labeled_perc_excess %>%
+  group_by(site) %>%
+  anova_test(dv = Zygomycota, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction, "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction, aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Zygomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216 and EC5158 are outliers
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Zygomycota)
+
+#Check for normal distribution; was normally distributed at each time point, as assessed by Shapiro-Wilk’s test (p > 0.05) after removal of outlieres
+#with outliers
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+#without outliers
+labeled_fraction %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Zygomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+#without outliers
+labeled_fraction %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>%
+  group_by(timepoint) %>%
+  levene_test(Zygomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_fraction %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Zygomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_fraction %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158"), "site_crop", "Zygomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158"), aes(x = factor(site_crop), y = Zygomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Zygomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+No interaction effects, so no need to run simple effects tests. Both site and crop are significant effects with a greater fraction of biomass 13C in Michigan compared to Wisconsin and a greater fraction in corn compared to switchgrass.
+```{r}
+#with outliers
+labeled_fraction %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_fraction %>% filter(catalog_number != "EC5216" & catalog_number != "EC5158") %>% anova_test(dv = Zygomycota, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+
+# Ascomycota and Basidiomycota
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in Ascomycota and Basidiomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; no extreme outliers
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Ascomycota_Basidiomycota)
+
+#!!!!!Check for normal distribution; was normally distributed at each time point except 2 months in WI SWG, as assessed by Shapiro-Wilk’s test (p > 0.05).
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05)
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+There is a significant interaction effect between crop and timepoint
+```{r}
+labeled_abundances %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop)) 
+```
+
+### Simple Effects Test 
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects 
+
+#simple main effect of timepoint is only significant for switchgrass samples
+labeled_abundances %>%
+  group_by(crop) %>%
+  anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+
+#simple main effect of crop is only significant for the 2 month timepoint
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Ascomycota_Basidiomycota, between = c(crop)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Ascomycota and Basidiomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5285 is an outlier 
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Ascomycota_Basidiomycota)
+
+#Check for normal distribution; was normally distributed at each time point as assessed by Shapiro-Wilk’s test (p > 0.05) with and without outlier
+#with outlier
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+#without outlier
+labeled_13Cabund %>% 
+  filter(catalog_number != "EC5285") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+#without outlier
+labeled_13Cabund %>%
+  filter(catalog_number != "EC5285") %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_13Cabund %>% filter(catalog_number != "EC5285") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_13Cabund %>% filter(catalog_number != "EC5285"), "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund %>% filter(catalog_number != "EC5285"), aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in Ascomycota and Basidiomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is no significant interaction effects. Crop and timepoint are main effects, with more 13C excess/g dry soil in switchgrass compared to corn, and more at 2 months compared to 1 year.
+```{r}
+#with outlier
+labeled_13Cabund %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier
+labeled_13Cabund %>% filter(catalog_number != "EC5285") %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Ascomycota and Basidiomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5285 is an outlier 
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Ascomycota_Basidiomycota)
+
+#Check for normal distribution; was normally distributed at each time point as assessed by Shapiro-Wilk’s test (p > 0.05) after removal of outlier
+#with outlier
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+#without outlier
+labeled_excess %>% 
+  filter(catalog_number != "EC5285") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+#without outlier
+labeled_excess %>%
+  filter(catalog_number != "EC5285") %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_excess %>% filter(catalog_number != "EC5285") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_excess %>% filter(catalog_number != "EC5285"), "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess %>% filter(catalog_number != "EC5285"), aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in Ascomycota and Basidiomycota specific PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is no significant interaction effects. Crop and timepoint are main effects, with more 13C excess/g dry soil in switchgrass compared to corn, and more at 2 months compared to 1 year.
+```{r}
+#with outlier
+labeled_excess %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier
+labeled_excess %>% filter(catalog_number != "EC5285") %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Ascomycota and Basidiomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5068 and EC5172 are outliers 
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Ascomycota_Basidiomycota)
+
+#!!!!Check for normal distribution; was not normally distributed at each time point as assessed by Shapiro-Wilk’s test (p > 0.05); MI SWG at 1 year is not normally distributed even after removal of outliers
+#with outlier
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+#without outlier
+labeled_perc_excess %>% 
+  filter(catalog_number != "EC5068" & catalog_number != "EC5172") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+#without outlier
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5068" & catalog_number != "EC5172") %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_perc_excess %>% filter(catalog_number != "EC5068" & catalog_number != "EC5172") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_perc_excess %>% filter(catalog_number != "EC5068" & catalog_number != "EC5172"), "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess %>% filter(catalog_number != "EC5068" & catalog_number != "EC5172"), aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in Ascomycota and Basidiomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is no significant interaction effects. Site, crop, and timepoint are significant main effects, with higher mean wt% 13C excess in Michigan compared to WI, in corn compared to switchgrass, and at 2 months compared to 1 year. No difference in trends after removal of outliers.
+```{r}
+#with outlier
+labeled_perc_excess %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier
+labeled_perc_excess %>% filter(catalog_number != "EC5068" & catalog_number != "EC5172") %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction, "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction, aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Ascomycota and Basidiomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5055 is an outlier
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Ascomycota_Basidiomycota)
+
+#Check for normal distribution; was normally distributed at each time point as assessed by Shapiro-Wilk’s test (p > 0.05) with an without outlier
+#with outlier
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+#without outlier
+labeled_fraction %>% 
+  filter(catalog_number != "EC5055") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Ascomycota_Basidiomycota)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with and without outlier
+#with outlier
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+#without outlier
+labeled_fraction %>%
+  filter(catalog_number != "EC5055") %>%
+  group_by(timepoint) %>%
+  levene_test(Ascomycota_Basidiomycota ~ site*crop)
+```
+
+### Summary and Boxplot without Outlier
+```{r}
+#summary
+labeled_fraction %>% filter(catalog_number != "EC5055") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Ascomycota_Basidiomycota, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_fraction %>% filter(catalog_number != "EC5055"), "site_crop", "Ascomycota_Basidiomycota",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction %>% filter(catalog_number != "EC5055"), aes(x = factor(site_crop), y = Ascomycota_Basidiomycota, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in Ascomycota and Basidiomycota specific PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is no significant interaction effects. Site is a significant main effect, with a greater fraction of biomass 13C excess in Ascomycota and Basidiomycota in Michigan compared to Wisconsin. No difference in trends after removal of outliers.
+```{r}
+#with outlier
+labeled_fraction %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outlier
+labeled_fraction %>% filter(catalog_number != "EC5055") %>% anova_test(dv = Ascomycota_Basidiomycota, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+
+# Unspecified Fungi
+## ug C/g dry soil
+### Summary
+```{r}
+labeled_abundances %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_abundances, "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_abundances, aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug C in unspecified fungal PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216 and EC5068 are outliers 
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Unspecified_Fungi)
+
+#Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05)
+#with outliers, MI CRN at 1 year and WI SWG at 1 year are not normally distributed 
+labeled_abundances %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+#without outliers, all groups are normally distributed 
+labeled_abundances %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_abundances %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+#without outliers
+labeled_abundances %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+```
+
+### Three-Way Mixed Model ANOVA
+With and without outliers, there are no significant interactions. Crop is a main effect with more unspecified fungal biomarkers in switchgrass soils
+```{r}
+#with outliers
+labeled_abundances %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_abundances %>% filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+## ug 13C/g dry soil
+### Summary
+```{r}
+labeled_13Cabund %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_13Cabund, "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund, aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in unspecified fungal PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216 and EC5068 are outliers 
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Unspecified_Fungi)
+
+#!!!Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05); MI SWG at 2 months and WI SWG at 2 months are not normally distributed
+#with outliers
+labeled_13Cabund %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+#without outliers
+labeled_13Cabund %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+#without outliers
+labeled_13Cabund %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_13Cabund %>% filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_13Cabund %>% filter(catalog_number != "EC5216"  & catalog_number != "EC5068") , "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_13Cabund %>% filter(catalog_number != "EC5216"  & catalog_number != "EC5068") , aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C in unspecified fungal PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There are no significant interaction effects. Crop is the only significant main effect with more 13C in switchgrass compared to corn.
+```{r}
+#with outliers
+labeled_13Cabund %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_13Cabund %>% filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+## ug 13C excess/g dry soil
+### Summary
+```{r}
+labeled_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_excess, "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess, aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in unspecified fungal PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5216, EC5251, and EC5068 are outliers 
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Unspecified_Fungi)
+
+#!!!Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05); MI SWG at 2 months and WI SWG at 2 months are not normally distributed
+#with outliers
+labeled_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+#without outliers
+labeled_excess %>% 
+  filter(catalog_number != "EC5216" & catalog_number != "EC5068") %>%
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outliers
+#with outliers
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+#without outliers
+labeled_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") , "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") , aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "ug 13C excess in unspecified fungal PLFAs/g soil", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There are significant interaction effects. With outliers, there is a significant two-way interaction between site and timepoint. Without outliers, there is a significant three-way interaction between site, crop, and timepoint.
+```{r}
+#with outliers
+labeled_excess %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_excess %>% filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop))
+```
+
+### Simple Effects Tests
+```{r}
+#with outliers
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+#compute simple main effect of site for each timepoint; site is significant only for the 2 month timepoint
+labeled_excess %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each site; timepoint is not significant for either site
+labeled_excess %>%
+  group_by(site) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#without outliers
+#Because there was a significant three-way interaction, performing simple two-way interactions and simple simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+#crop and timepoint
+#performing a simple two-way interaction between site and timepoint for each crop; the two way interaction was significant for only switchgrass
+labeled_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") %>%
+  group_by(crop) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#for switchgrass, compute simple simple main effect of site for each timepoint; site is significant the 2 month timepoint
+labeled_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") %>%
+  filter(crop == "Switchgrass") %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#for switchgrass, compute simple simple main effect of timepoint for each site; timepoint is significant only for WI
+labeled_excess %>%
+  filter(catalog_number != "EC5216" & catalog_number != "EC5251" & catalog_number != "EC5068") %>%
+  filter(crop == "Switchgrass") %>%
+  group_by(site) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+## mean wt% 13C excess
+### Summary
+```{r}
+labeled_perc_excess %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_perc_excess, "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess, aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in unspecified fungal PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5068 is an outlier
+labeled_perc_excess %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Unspecified_Fungi)
+
+#!!!Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05); no MI SWG 2 month after removal of outlier
+#with outlier
+#labeled_perc_excess %>% 
+  #group_by(site, crop, timepoint) %>%
+  #shapiro_test(Unspecified_Fungi)
+#without outlier
+#labeled_perc_excess %>% 
+  #filter(catalog_number != "EC5068") %>%
+  #group_by(site, crop, timepoint) %>%
+  #shapiro_test(Unspecified_Fungi)
+
+#Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) both with and without outlier
+#with outlier
+labeled_perc_excess %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+#without outlier
+labeled_perc_excess %>%
+  filter(catalog_number != "EC5068") %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_perc_excess %>% filter(catalog_number != "EC5068") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_perc_excess %>% filter(catalog_number != "EC5068") , "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_perc_excess %>% filter(catalog_number != "EC5068") , aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "mean wt% 13C excess in unspecified fungal PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There are no significant interaction effects. There is a significant main effect of site and crop with higher mean wt% 13C excess in unspecified Fungi in Michigan compared to Wisconsin and in corn compared to switchgrass.
+```{r}
+#with outliers
+labeled_perc_excess %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_perc_excess %>% filter(catalog_number != "EC5068") %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop))
+```
+
+
+## Fraction of biomass 13C excess
+### Summary
+```{r}
+labeled_fraction %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+```
+
+### Boxplot
+```{r}
+ggboxplot(labeled_fraction, "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction, aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in unspecified fungal PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Validate Assumptions for Running Mixed Model ANOVA
+```{r}
+#Check for outliers; EC5251 is an outlier
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  identify_outliers(Unspecified_Fungi)
+
+#!!!Check for normal distribution as assessed by Shapiro-Wilk’s test (p > 0.05); MI SWG at 2 month is not normally distributed 
+#with outlier
+labeled_fraction %>% 
+  group_by(site, crop, timepoint) %>%
+  shapiro_test(Unspecified_Fungi)
+#without outlier
+#labeled_fraction %>% 
+  #filter(catalog_number != "EC5251") %>%
+  #group_by(site, crop, timepoint) %>%
+  #shapiro_test(Unspecified_Fungi)
+
+#!!!!Check for homogeneity of variance; was homogeneous as assessed by Levene test (p > 0.05) with outlier, but not without
+#with outlier
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+#without outlier
+labeled_fraction %>%
+  filter(catalog_number != "EC5251") %>%
+  group_by(timepoint) %>%
+  levene_test(Unspecified_Fungi ~ site*crop)
+```
+
+### Summary and Boxplot without Outliers
+```{r}
+#summary
+labeled_fraction %>% filter(catalog_number != "EC5251") %>% group_by(site, crop, timepoint) %>% get_summary_stats(Unspecified_Fungi, type = "mean_sd")
+
+#boxplot
+ggboxplot(labeled_fraction %>% filter(catalog_number != "EC5251") , "site_crop", "Unspecified_Fungi",
+     fill = "timepoint", palette = c("white", "gray")) +
+  geom_point(data = labeled_fraction %>% filter(catalog_number != "EC5251") , aes(x = factor(site_crop), y = Unspecified_Fungi, colour = factor(site_crop), shape = factor(timepoint)), position = position_jitterdodge())+
+  scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) +
+  scale_shape_manual(values = c(16,16))+
+  labs(x = "", y = "Fraction of biomass 13C excess in unspecified fungal PLFAs", fill = "", color = "") +
+  guides(shape = "none") 
+```
+
+### Three-Way Mixed Model ANOVA
+There is a significant two-way interaction between site and timepoint.
+```{r}
+#with outliers
+labeled_fraction %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop)) 
+
+#without outliers
+labeled_fraction %>% filter(catalog_number != "EC5251") %>% anova_test(dv = Unspecified_Fungi, wid = id, within = timepoint, between = c(site, crop))
+```
+
+### Simple Effects Tests
+```{r}
+#Because there was a significant two-way interaction, performing simple main effects; for these statistical significance was accepted at the p < 0.025 level 
+
+#with outliers
+#compute simple main effect of site for each timepoint; site is significant only for the 1 year timepoint
+labeled_fraction %>%
+  group_by(timepoint) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each site; timepoint is significant at Michigan 
+labeled_fraction %>%
+  group_by(site) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+
+#without outlier
+#compute simple main effect of site for each timepoint; site is significant only for the 1 year timepoint
+labeled_fraction %>%
+  filter(catalog_number != "EC5251") %>% 
+  group_by(timepoint) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, between = c(site)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+#compute simple main effect of timepoint for each site; timepoint is not significant at either site
+labeled_fraction %>%
+  filter(catalog_number != "EC5251") %>% 
+  group_by(site) %>%
+  anova_test(dv = Unspecified_Fungi, wid = id, within = c(timepoint)) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance(p.col = "p.adj", cutpoints = c(0, 0.025, 1), symbols = c( "*", "ns"))
+```
+
+
+# Fraction of Whole Soil
+## ug C/g dry soil
+```{r}
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+ # group_by(Fraction, Site, Crop, Timepoint) %>% 
+  get_summary_stats(perc.ug.Total.C.per.g.dry.soil.WS, type = "mean_sd")
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Timepoint) %>% 
+  get_summary_stats(perc.ug.Total.C.per.g.dry.soil.WS, type = "mean_sd")
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Site, Crop, Timepoint) %>% 
+  get_summary_stats(perc.ug.Total.C.per.g.dry.soil.WS, type = "mean_sd") 
+```
+
+## ug 13C/g dry soil
+```{r}
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+ # group_by(Fraction, Site, Crop, Timepoint) %>% 
+  get_summary_stats(perc.ug.13C.per.g.dry.soil.WS, type = "mean_sd")
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Timepoint) %>% 
+  get_summary_stats(perc.ug.13C.per.g.dry.soil.WS, type = "mean_sd")
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Site, Crop, Timepoint) %>% 
+  get_summary_stats(perc.ug.13C.per.g.dry.soil.WS, type = "mean_sd") 
+```
+
+
+## ug 13C excess/g dry soil
+```{r}
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+ # group_by(Fraction, Site, Crop, Timepoint) %>% 
+  get_summary_stats(perc.ug.13C.excess.per.g.dry.soil.WS, type = "mean_sd")
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Timepoint) %>% 
+  get_summary_stats(perc.ug.13C.excess.per.g.dry.soil.WS, type = "mean_sd")
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Site, Crop, Timepoint) %>% 
+  get_summary_stats(perc.ug.13C.excess.per.g.dry.soil.WS, type = "mean_sd") 
+
+joined_frac %>% filter(Fraction == "biomass_PLFAs") %>% 
+  group_by(Fraction, Site, Crop) %>% 
+  get_summary_stats(perc.ug.13C.excess.per.g.dry.soil.WS, type = "mean_sd")
+```
+
+
+# Figure 3 
+```{r}
+biomass_corr <- joined %>% filter(Fraction == "biomass_PLFAs")  %>%
+#add soil-crop and id columns for plot coloring and pairing replicates with time, respectively
+  mutate(site_crop = paste0(Site, " ", Crop), Treatment = case_when(
+  Site == "Michigan" & Crop == "Corn" ~ "Sandy Corn",
+  Site == "Michigan" & Crop == "Switchgrass" ~ "Sandy Switchgrass",
+  Site == "Wisconsin" & Crop == "Corn" ~ "Silty Corn",
+  Site == "Wisconsin" & Crop == "Switchgrass" ~ "Silty Switchgrass"
+), 
+Treatment = factor(Treatment, levels = c("Sandy Corn", "Sandy Switchgrass", "Silty Corn", "Silty Switchgrass")),
+id = paste0(Site ,"_", Crop, "_", Block)) %>% 
+  #convert categorical variable columns to factors for plotting
+  mutate(Timepoint = as.factor(Timepoint), Site = as.factor(Site), Crop = as.factor(Crop), id = as.factor(id))
+
+#compare biomass to 13C excess biomass
+ggscatter(biomass_corr, "ug.Total.C.per.g.dry.soil", "ug.13C.excess.per.g.dry.soil",
+     shape = "Timepoint", color = "Treatment", add = "reg.line", add.params = list(color = "black", fill = "lightgray"), 
+   conf.int = TRUE, cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")) +
+   scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) + xlab (expression(paste(mu, g, " C in biomass PLFAs ", g^-1,"dry soil" ))) + ylab (expression(paste(mu, g, " "^13, "C excess in biomass PLFAs ", g^-1,"dry soil" ))) 
+  
+  
+# compare 13C biomass to 13C whole soil
+ggscatter(biomass_corr, "ug.13C.excess.per.g.dry.soil", "ug.13C.excess.per.g.dry.soil.WS",
+     shape = "Timepoint", color = "Treatment", add = "reg.line", add.params = list(color = "black", fill = "lightgray"), 
+   conf.int = TRUE, cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.sep = "\n")) +
+   scale_colour_manual(values = c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")) + xlab (expression(paste(mu, g, " "^13, "C excess in biomass PLFAs ", g^-1,"dry soil" )))  + ylab (expression(paste(mu, g, " "^13, "C excess whole soil ", g^-1,"dry soil" ))) + labs_pubr()
+```
+
+
+
+# Figure 6
+```{r}
+palette_muted <- c("#CC6677", "#332288", "#DDCC77", "#117733", "#88CCEE", "#882255", "#44AA99", "#999933" )
+
+excess_groups <- excess_all %>% select(c(timepoint, Bacteria, Actinobacteria, Firmicutes, G_neg, Fungi, Zygomycota, Ascomycota_Basidiomycota, Unspecified_Fungi)) %>% pivot_longer(cols = 2:9, values_to = "ug.13C.excess", names_to = "Microbial Group") %>% mutate(`Microbial Group` = case_when(
+  `Microbial Group` == "G_neg" ~ "Gram - bacteria",
+  `Microbial Group` == "Ascomycota_Basidiomycota" ~ "Ascomycota and Basidiomycota",
+  `Microbial Group` == "Unspecified_Fungi" ~ "Unspecified Fungi", 
+  TRUE ~ `Microbial Group`),
+  timepoint = ifelse(timepoint == "1year", "1 year", "2 months"), 
+  timepoint = factor(timepoint, levels = c("2 months", "1 year")))
+
+ggboxplot(excess_groups, "Microbial Group", "ug.13C.excess",
+     fill = "Microbial Group", palette = palette_muted, facet.by = "timepoint", ncol = 1)  + ylab (expression(paste(mu, g, " "^13, "C ", g^-1,"dry soil" ))) + rotate_x_text() + labs_pubr() + rremove("legend")
+```
+

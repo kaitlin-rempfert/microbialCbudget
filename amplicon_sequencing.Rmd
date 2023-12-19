@@ -1,0 +1,299 @@
+---
+title: "Amplicon Sequencing"
+author: "Kaitlin Rempfert"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged 
+    number_sections: yes 
+    css: stylesheet.css 
+    toc: yes 
+    toc_float: true 
+    toc_depth: 3 
+    code_folding: show 
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = TRUE, message=FALSE, warning=FALSE}
+# clear workspace
+# WS = c(ls())
+# rm(WS, list = WS)
+
+# load required packages
+library(tidyverse)
+library(ggplot2)
+library(vegan)
+library(phyloseq)
+library(ggvegan)
+library(knitr)
+library(readxl)
+library(metagenomeSeq)
+library(hilldiv)
+library(microViz)
+library(patchwork)
+
+knitr::opts_chunk$set(echo = TRUE, cache = F)
+```
+
+
+# Import Data
+```{r}
+dna_16S <- read_excel("data/DNA/EC_full_16S_table-with-taxonomy.xlsx")
+
+dna_ITS <- read_excel("data/DNA/EC_ITS_table-with-taxonomy.xlsx")
+
+#import metadata file 
+meta <- readxl::read_excel("data/DNA/EC_IDkey.xlsx")
+```
+
+
+# 16S
+
+## QC 
+```{r}
+#filter 16S data to get rid of ASVs with no reads and chloroplasts/mitochorndria 
+dna_16S <- dna_16S %>% filter_all(any_vars(. != 0)) %>% filter(!grepl("Chloroplast",taxonomy)) %>% filter(!grepl("Mitochondria",taxonomy)) 
+```
+
+## Prep data for PhyloSeq
+```{r}
+#sample dataframe
+samples_df <- meta %>% 
+  select(-c(Jar.Number, Gas, `Full Sample ID`)) %>% 
+  filter(Ammendment != "Control") %>%
+  filter(Ammendment == "13C-Gluc") %>%
+  distinct() %>%
+  mutate(
+  timepoint_abbr = case_when(
+    TimePoint == "24H" ~ "1d",
+    TimePoint == "1Week" ~ "8d",
+    TimePoint == "2Month" ~ "2mo",
+    TimePoint == "Final" ~ "1yr"
+  ),
+  timepoint_abbr = factor(timepoint_abbr, levels = c("1d", "8d", "2mo", "1yr")),
+  sample = paste0("EC2020-", Catalog.Number, "-D2"),
+  site = ifelse(Site == "Michigan", "MI", "WI"), 
+  soil = ifelse(site == "MI", "Sandy", "Silty"),
+  crop = ifelse(Crop == "Switchgrass", "SWG", "CRN"),
+  site_crop = paste0(site, " ", crop),
+  soil_crop = paste0(soil, " ", crop),
+  Label = paste0(crop, "_", Block, " ", timepoint_abbr)) %>% arrange(sample) %>% tibble::column_to_rownames("sample") 
+
+#create vector to select only samples of interest
+samples <- rownames(samples_df)
+
+#create otu table
+otu_table_16S <- dna_16S %>% dplyr::rename("otu" = "#OTU ID") %>% select(c(otu, matches(samples))) #filter DNA to only include samples
+
+#create taxonomy table
+taxonomy_16S <- dna_16S %>% select(c("taxonomy", "#OTU ID")) %>% dplyr::rename("otu" = "#OTU ID")
+#split taxonomy 
+taxonomy_16S_split <- str_split_fixed(taxonomy_16S$taxonomy, ";", 12)
+taxonomy_16S <- taxonomy_16S_split %>% as.data.frame() %>% mutate(
+  Domain = sub(".*__", "", V1),
+  Phylum = sub(".*__", "", V2),
+  Class = sub(".*__", "", V3),
+  Order = sub(".*__", "", V4),
+  Family = sub(".*__", "", V5),
+  Genus = sub(".*__", "", V6), 
+  Species = sub(".*__", "", V7), 
+    ) %>% select(c(Domain, Phylum, Class, Order, Family, Genus, Species)) %>% cbind(taxonomy_16S) 
+
+#convert otu table and taxonomy table to matrices
+otu_mat_16S <- otu_table_16S %>% tibble::column_to_rownames("otu") %>% select(sort(names(.))) %>% as.matrix()
+tax_mat_16S <- taxonomy_16S %>% select(-taxonomy) %>% tibble::column_to_rownames("otu") %>% as.matrix()
+```
+
+## Read data into PhyloSeq
+```{r}
+ OTU = otu_table(otu_mat_16S, taxa_are_rows = TRUE)
+ TAX = tax_table(tax_mat_16S)
+ samples = sample_data(samples_df)
+  
+ ps_16S <- phyloseq(OTU, TAX, samples)
+ ps_16S
+ 
+#check phyloseq object
+sample_names(ps_16S)
+rank_names(ps_16S)
+sample_variables(ps_16S)
+```
+
+## Fix taxa table and removed any unindentified taxa
+```{r}
+ps_16S <- ps_16S %>% tax_fix(unknowns = c("Ambiguous_taxa", "metagenome", "uncultured bacterium", "uncultured soil bacterium", "groundwater metagenome", "uncultured","unidentified", c("uncultured alpha proteobacterium", "uncultured alpha proteobacterium Genus", "uncultured delta proteobacterium", "uncultured delta proteobacterium Genus", "uncultured gamma proteobacterium Genus", "uncultured Hyphomicrobiaceae bacterium", "uncultured Myxococcales bacterium", "uncultured Myxococcales bacterium Genus", "uncultured Nitrosomonadaceae bacterium Genus", "uncultured organism Genus", "uncultured Polyangiaceae bacterium", "uncultured Polyangiaceae bacterium Genus", "uncultured proteobacterium", "uncultured proteobacterium Family", "uncultured proteobacterium Genus", "uncultured Rhodocyclaceae bacterium", "uncultured Xanthomonadaceae bacterium", "uncultured Xanthomonadales bacterium")))
+ps_16S <- phyloseq_validate(ps_16S, remove_undetected = TRUE)
+```
+
+## Top 10 barplot
+```{r}
+#top 10, faceted by site
+barplot_16S <- ps_16S %>% 
+  comp_barplot(
+    tax_level = "Phylum",
+    facet_by = c("soil", "crop"),
+    label = "Label", # name an alternative variable to label axis
+    n_taxa = 10, # give more taxa unique colours
+    #taxon_renamer = function(x) stringr::str_replace_all(x, "_", " "), # remove underscores
+    other_name = "Other", # set custom name for the "other" category
+    #merge_other = FALSE, # split the "Other" category to display alpha diversity
+    #bar_width = 0.7, # reduce the bar width to 70% of one row
+    #bar_outline_colour = "grey5" # is the default (use NA to remove outlines)
+    #order_with_all_taxa = TRUE
+  ) +
+  coord_flip()
+
+barplot_16S
+```
+
+## NMDS
+```{r}
+paired_4 <- c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")
+
+nmds_16S <- ps_16S %>%
+  tax_transform("identity") %>% # don't transform!
+  dist_calc("bray") %>% 
+  ord_calc("NMDS") %>% 
+  ord_plot(color = "soil_crop", shape = "timepoint_abbr", size = 2) +
+    scale_shape_manual(values = c(
+    `2mo` = "square", 
+    `1d` = "circle open",
+    `8d` =  "triangle",
+    `1yr` = "circle"
+    )) +
+  labs(title = "Bacterial 16S", caption = "stress = 0.16", color = "Treatment", shape = "Timepoint") +
+   scale_colour_manual(values = paired_4)
+
+ ps_16S %>%
+  tax_transform("identity") %>% # don't transform!
+  dist_calc("bray") %>% 
+  dist_permanova(variables = c("TimePoint", "site", "crop"), n_perms = 999, seed = 123) %>%
+  perm_get()
+ 
+ nmds_16S
+```
+
+
+
+# ITS
+
+## QC 
+```{r}
+#filter ITS data to get rid of ASVs with no reads and chloroplasts/mitochorndria 
+dna_ITS <- dna_ITS %>% filter_all(any_vars(. != 0)) %>% filter(!grepl("Chloroplast",taxonomy)) %>% filter(!grepl("Mitochondria",taxonomy)) 
+```
+
+## Prep data for PhyloSeq
+```{r}
+#create vector to select only samples of interest
+samples <- rownames(samples_df)
+
+#create otu table
+otu_table_ITS <- dna_ITS %>% dplyr::rename("otu" = "#OTU ID") %>% select(c(otu, matches(samples))) #filter DNA to only include samples
+
+#create taxonomy table
+taxonomy_ITS <- dna_ITS %>% select(c("taxonomy", "#OTU ID")) %>% dplyr::rename("otu" = "#OTU ID")
+#split taxonomy 
+taxonomy_ITS_split <- str_split_fixed(taxonomy_ITS$taxonomy, ";", 12)
+taxonomy_ITS <- taxonomy_ITS_split %>% as.data.frame() %>% mutate(
+  Domain = sub(".*__", "", V1),
+  Phylum = sub(".*__", "", V2),
+  Class = sub(".*__", "", V3),
+  Order = sub(".*__", "", V4),
+  Family = sub(".*__", "", V5),
+  Genus = sub(".*__", "", V6), 
+  Species = sub(".*__", "", V7), 
+    ) %>% select(c(Domain, Phylum, Class, Order, Family, Genus, Species)) %>% cbind(taxonomy_ITS) 
+
+#filter out unidentified
+taxonomy_ITS_filt <- taxonomy_ITS %>% filter(Phylum != "" & Phylum != "unidentified")
+otu_filt <- taxonomy_ITS_filt$otu
+otu_table_ITS_filt <- otu_table_ITS %>% filter(otu %in% otu_filt)
+
+#convert otu table and taxonomy table to matrices
+otu_mat_ITS <- otu_table_ITS_filt %>%  tibble::column_to_rownames("otu") %>% select(sort(names(.))) %>% as.matrix()
+tax_mat_ITS <- taxonomy_ITS_filt %>% select(-taxonomy) %>% tibble::column_to_rownames("otu") %>% as.matrix()
+```
+
+## Read data into PhyloSeq
+```{r}
+ OTU = otu_table(otu_mat_ITS, taxa_are_rows = TRUE)
+ TAX = tax_table(tax_mat_ITS)
+ samples = sample_data(samples_df)
+  
+ ps_ITS <- phyloseq(OTU, TAX, samples)
+ ps_ITS
+ 
+#check phyloseq object
+sample_names(ps_ITS)
+rank_names(ps_ITS)
+sample_variables(ps_ITS)
+```
+
+## Fix taxa table and removed any unindentified taxa
+```{r}
+ps_ITS <- ps_ITS %>% tax_fix(unknowns = c("unidentified"))
+ps_ITS <- phyloseq_validate(ps_ITS, remove_undetected = TRUE)
+```
+
+## Top 10 barplot
+```{r}
+#top 10, faceted by site
+barplot_ITS <- ps_ITS %>% 
+  comp_barplot(
+    tax_level = "Phylum",
+    facet_by = c("soil", "crop"),
+    label = "Label", # name an alternative variable to label axis
+    n_taxa = 10, # give more taxa unique colours
+    #taxon_renamer = function(x) stringr::str_replace_all(x, "_", " "), # remove underscores
+    other_name = "Other", # set custom name for the "other" category
+    #merge_other = FALSE, # split the "Other" category to display alpha diversity
+    #bar_width = 0.7, # reduce the bar width to 70% of one row
+    #bar_outline_colour = "grey5" # is the default (use NA to remove outlines)
+    #order_with_all_taxa = TRUE
+  ) +
+  coord_flip()
+
+barplot_ITS
+```
+
+## NMDS
+```{r}
+paired_4 <- c("#A6CEE3" ,"#1F78B4", "#FB9A99" ,"#E31A1C")
+
+nmds_ITS <- ps_ITS %>%
+  tax_transform("identity") %>% # don't transform!
+  dist_calc("bray") %>% 
+  ord_calc("NMDS") %>% 
+  ord_plot(color = "soil_crop", shape = "timepoint_abbr", size = 2) +
+    scale_shape_manual(values = c(
+    `2mo` = "square", 
+    `1d` = "circle open",
+    `8d` =  "triangle",
+    `1yr` = "circle"
+    )) +
+  labs(title = "Fungal ITS", caption = "stress = 0.21", color = "Treatment", shape = "Timepoint") +
+   scale_colour_manual(values = paired_4)
+
+ ps_ITS %>%
+  #tax_filter(min_prevalence = 2.5 / 100, verbose = FALSE) %>%
+  tax_transform("identity") %>% # don't transform!
+  dist_calc("bray") %>% 
+  dist_permanova(variables = c("TimePoint", "site", "crop"), n_perms = 999, seed = 123) %>%
+  perm_get()
+ 
+ nmds_ITS
+```
+
+
+
+# Figures for export 
+```{r}
+patchwork_nmds <- nmds_16S / nmds_ITS
+patchwork_nmds + plot_annotation(tag_levels = 'a')
+
+patchwork_bar <- barplot_16S / barplot_ITS
+patchwork_bar + plot_annotation(tag_levels = 'a')
+```
+
