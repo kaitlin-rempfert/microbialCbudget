@@ -3915,7 +3915,7 @@ Dist0
 #mean wt% 13C excess
 Folch_frac_1 <- Folch_frac %>% filter(Fraction != "WS") %>% group_by(Fraction) %>% summarize(mean.wt.perc = mean(wt.perc.13C.excess), sd.wt.perc = sd(wt.perc.13C.excess)) %>% mutate(Fraction2 = ifelse(Fraction == "LSP", "Unextracted MAOM", Fraction), Type = factor(Fraction2, levels = c("Unextracted MAOM", "Metabolite", "Protein", "Lipid", "CRUD")), Group2 = factor(Fraction2, levels = c("Unextracted MAOM", "CRUD", "Lipid", "Protein", "Metabolite")))
 
-g1<-ggplot(data=Folch_frac_2, aes(x=mean.wt.perc, xmin = mean.wt.perc - sd.wt.perc, xmax = mean.wt.perc + sd.wt.perc, y = Group2, fill=Type))
+g1<- ggplot(data=Folch_frac_1, aes(x=mean.wt.perc, xmin = mean.wt.perc - sd.wt.perc, xmax = mean.wt.perc + sd.wt.perc, y = Group2, fill=Type))
 
 Dist1<- g1+ geom_bar(stat="identity") +
   geom_errorbarh(stat =  "identity", height = 0.25) +
@@ -3975,6 +3975,9 @@ Dist2
 Folch_frac_3 <- Folch_frac %>% filter(Fraction != "WS") %>% mutate(soil_crop = case_when(site_crop == "Michigan Corn" ~ "Sandy Corn", site_crop == "Michigan Switchgrass" ~ "Sandy Switchgrass", site_crop == "Wisconsin Corn" ~ "Silty Corn", site_crop == "Wisconsin Switchgrass" ~ "Silty Switchgrass")) %>% group_by(soil_crop, Timepoint, Fraction) %>% summarize(mean.pool = mean(Pool_Pct_ug_13Cexcess_g_soil), sd.pool = sd(Pool_Pct_ug_13Cexcess_g_soil)) %>% mutate(Fraction2 = ifelse(Fraction == "LSP", "Unextracted MAOM", Fraction), Type = factor(Fraction2, levels = c("Metabolite", "Protein", "Lipid", "CRUD", "Unextracted MAOM")))
 
 g3<-ggplot(data=Folch_frac_3 %>% filter(Timepoint == "2Month"), aes(x = soil_crop, y = mean.pool, fill=Type))
+
+
+colorpallete2 <- c("orange", "purple", "#007308","grey", "chocolate4")
 
 Dist3<- g3+ geom_bar(stat="identity") +
   ylab (expression(paste("Proportion of recovered "^13, "C"))) +
